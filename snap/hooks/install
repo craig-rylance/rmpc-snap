@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+mkdir -p "$SNAP_COMMON/Music"
+mkdir -p "$SNAP_COMMON/playlists"
+cp "$SNAP/etc/rmpc/config.ron" "$SNAP_COMMON/config.ron"

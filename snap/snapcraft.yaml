@@ -1,41 +1,87 @@
-name: rmpc # you probably want to 'snapcraft register <name>'
-base: core24 # the base snap is the execution environment for this snap
-version: 'latest' # just for humans, typically '1.2+git' or '1.3.2'
+name: rmpc
+base: core24
+version: 'latest'
 summary: A configurable, terminal based Media Player Client with album art support
 description: |
   Rmpc is a beautiful, modern and configurable terminal based Music Player Daemon client. It was inspired by ncmpcpp and aims to provide an alternative with support for album art through kitty image protocol without any ugly hacks. It also features ranger/lf inspired browsing of songs and other goodies.
   Written by Mierak on Github. Find the upstream code at https://github.com/mierak/rmpc and documentation on their website https://mierak.github.io/rmpc/
 
 grade: devel # must be 'stable' to release into candidate/stable channels
-confinement: strict # use 'strict' once you have the right plugs and slots
+confinement: strict
 
 parts:
   rmpc:
-    source: .
+    source: https://github.com/mierak/rmpc.git
     plugin: rust
+  mpd:
+    plugin: meson
+    source: https://github.com/MusicPlayerDaemon/MPD.git
+    build-packages:
+      - meson
+      - ninja-build
+      - g++
+      - pkg-config
+      - libpulse-dev
+    stage-packages:
+      - libmpdclient2t64
+      - libflac12t64
+      - libx11-xcb1
+      - libx11-6
+      - libxau6
+      - libxdmcp6
+      - libasyncns0
+      - libmp3lame0
+      - libmpg123-0t64
+      - libogg0
+      - libopus0
+      - libpulse0
+      - libsndfile1
+      - libvorbis0a
+      - libvorbisenc2
+      - libxcb1
+    meson-parameters:
+      - --buildtype=release
+      - -Dsysconfdir=/etc
+  mpc:
+    plugin: meson
+    source: https://github.com/MusicPlayerDaemon/mpc.git
+    build-packages:
+      - meson
+      - ninja-build
+      - gcc
+      - pkg-config
+      - libmpdclient-dev
+    stage-packages:
+      - libmpdclient2t64
+  configuration:
+    plugin: dump
+    source: snap/local/config/
+    source-type: local
+    organize:
+      '*': etc/rmpc/
 
 apps:
   rmpc:
-    command: /bin/rmpc
+    command: bin/rmpc --config $SNAP_COMMON/config.ron
     plugs:
-      - home
       - audio-playback
-      - rmpc-files
       - network
       - network-bind
-
-plugs:
-  rmpc-files:
-    interface: personal-files
-    read:
-      - $HOME/.config/rmpc
-      - $HOME/.config/rmpc/playlists
-      - $HOME/.config/rmpc/tag_cache # db file
-      - $HOME/.config/rmpc/state # state file
-      - $HOME/.config/rmpc/sticker.sql # sticker file
-    write:
-      - $HOME/.config/rmpc/playlists
-      - $HOME/.config/rmpc/tag_cache # db file
-      - $HOME/.config/rmpc/state # state file
-      - $HOME/.config/rmpc/sticker.sql # sticker file
-
+    environment:
+      RMPC_CONFIG: $SNAP_COMMON/rmpc/config.ron
+  mpd:
+    command: usr/local/bin/mpd --no-daemon $SNAP/etc/rmpc/mpd.conf
+    daemon: simple
+    plugs:
+      - audio-playback
+      - network
+      - network-bind
+    environment:
+      MPD_CONFIG: $SNAP/etc/rmpc/mpd.conf
+      LD_LIBRARY_PATH: "$LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio"
+      PULSE_SERVER: unix:/run/user/1000/pulse/native
+  mpc:
+    command: usr/local/bin/mpc
+    plugs:
+      - network
+      - network-bind
