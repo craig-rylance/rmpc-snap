@@ -7,52 +7,22 @@ description: |
   Written by Mierak on Github. Find the upstream code at https://github.com/mierak/rmpc and documentation on their website https://mierak.github.io/rmpc/
 
 grade: devel # must be 'stable' to release into candidate/stable channels
-confinement: strict
+confinement: devmode
 
 parts:
   rmpc:
     source: https://github.com/mierak/rmpc.git
     plugin: rust
   mpd:
-    plugin: meson
-    source: https://github.com/MusicPlayerDaemon/MPD.git
-    build-packages:
-      - meson
-      - ninja-build
-      - g++
-      - pkg-config
-      - libpulse-dev
+    plugin: nil
     stage-packages:
-      - libmpdclient2t64
-      - libflac12t64
-      - libx11-xcb1
-      - libx11-6
-      - libxau6
-      - libxdmcp6
-      - libasyncns0
-      - libmp3lame0
-      - libmpg123-0t64
-      - libogg0
-      - libopus0
-      - libpulse0
-      - libsndfile1
-      - libvorbis0a
-      - libvorbisenc2
-      - libxcb1
-    meson-parameters:
-      - --buildtype=release
-      - -Dsysconfdir=/etc
+      - mpd
+      - libaudio2
+      - samba-libs
   mpc:
-    plugin: meson
-    source: https://github.com/MusicPlayerDaemon/mpc.git
-    build-packages:
-      - meson
-      - ninja-build
-      - gcc
-      - pkg-config
-      - libmpdclient-dev
+    plugin: nil
     stage-packages:
-      - libmpdclient2t64
+      - mpc
   configuration:
     plugin: dump
     source: snap/local/config/
@@ -68,9 +38,9 @@ apps:
       - network
       - network-bind
     environment:
-      RMPC_CONFIG: $SNAP_COMMON/rmpc/config.ron
+      RMPC_CONFIG: $SNAP_COMMON/config.ron
   mpd:
-    command: usr/local/bin/mpd --no-daemon $SNAP/etc/rmpc/mpd.conf
+    command: usr/bin/mpd --no-daemon $SNAP/etc/rmpc/mpd.conf
     daemon: simple
     plugs:
       - audio-playback
@@ -78,10 +48,10 @@ apps:
       - network-bind
     environment:
       MPD_CONFIG: $SNAP/etc/rmpc/mpd.conf
-      LD_LIBRARY_PATH: "$LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio"
+      "LD_LIBRARY_PATH": "$LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$SNAP/usr/lib/x86_64-linux-gnu/samba:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio"
       PULSE_SERVER: unix:/run/user/1000/pulse/native
   mpc:
-    command: usr/local/bin/mpc
+    command: usr/bin/mpc
     plugs:
       - network
       - network-bind
