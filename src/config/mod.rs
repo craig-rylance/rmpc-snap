@@ -8,7 +8,7 @@ use std::{
 };
 
 use address::MpdPassword;
-use album_art::{AlbumArtConfig, AlbumArtConfigFile, ImageMethod, ImageMethodFile};
+use album_art::{AlbumArtConfig, AlbumArtConfigFile, ImageMethodFile};
 use anyhow::{Context, Result};
 use artists::{Artists, ArtistsFile};
 use cava::{Cava, CavaFile};
@@ -44,11 +44,7 @@ use self::{
 };
 use crate::{
     config::tabs::{SizedPaneOrSplit, Tab, TabName},
-    shared::{
-        image::{self, ImageProtocol},
-        lrc::LrcOffset,
-        macros::status_warn,
-    },
+    shared::{lrc::LrcOffset, terminal::TERMINAL},
     tmux,
 };
 
@@ -147,6 +143,7 @@ pub struct ConfigFile {
     pub enable_config_hot_reload: bool,
     #[serde(default)]
     keybinds: KeyConfigFile,
+    // Deprecated
     #[serde(default)]
     image_method: Option<ImageMethodFile>,
     #[serde(default)]
@@ -165,6 +162,8 @@ pub struct ConfigFile {
     artists: ArtistsFile,
     #[serde(default)]
     tabs: TabsFile,
+    #[serde(default)]
+    pub ignore_leading_the: bool,
     #[serde(default)]
     pub browser_song_sort: Vec<SongPropertyFile>,
     #[serde(default)]
@@ -227,6 +226,7 @@ impl Default for ConfigFile {
             wrap_navigation: false,
             password: None,
             artists: ArtistsFile::default(),
+            ignore_leading_the: false,
             browser_song_sort: defaults::default_song_sort(),
             directories_sort: SortModeFile::SortFormat { group_by_type: true, reverse: false },
             rewind_to_start_sec: None,
@@ -423,14 +423,16 @@ impl ConfigFile {
             on_resize: self.on_resize.map(|arr| {
                 Arc::new(arr.into_iter().map(|v| tilde_expand(&v).into_owned()).collect_vec())
             }),
+            show_playlists_in_browser: self.show_playlists_in_browser,
             browser_song_sort: Arc::new(SortOptions {
                 mode: SortMode::Format(
                     self.browser_song_sort.iter().cloned().map(SongProperty::from).collect_vec(),
                 ),
                 group_by_type: true,
                 reverse: false,
+                ignore_leading_the: self.ignore_leading_the,
+                fold_case: true,
             }),
-            show_playlists_in_browser: self.show_playlists_in_browser,
             directories_sort: Arc::new(match self.directories_sort {
                 SortModeFile::Format { group_by_type, reverse } => SortOptions {
                     mode: SortMode::Format(
@@ -443,6 +445,8 @@ impl ConfigFile {
                     ),
                     group_by_type,
                     reverse,
+                    ignore_leading_the: self.ignore_leading_the,
+                    fold_case: true,
                 },
                 SortModeFile::SortFormat { group_by_type, reverse } => SortOptions {
                     mode: SortMode::Format(
@@ -450,10 +454,16 @@ impl ConfigFile {
                     ),
                     group_by_type,
                     reverse,
+                    ignore_leading_the: self.ignore_leading_the,
+                    fold_case: true,
                 },
-                SortModeFile::ModifiedTime { group_by_type, reverse } => {
-                    SortOptions { mode: SortMode::ModifiedTime, group_by_type, reverse }
-                }
+                SortModeFile::ModifiedTime { group_by_type, reverse } => SortOptions {
+                    mode: SortMode::ModifiedTime,
+                    group_by_type,
+                    reverse,
+                    ignore_leading_the: self.ignore_leading_the,
+                    fold_case: true,
+                },
             }),
             theme,
             rewind_to_start_sec: self.rewind_to_start_sec,
@@ -471,47 +481,8 @@ impl ConfigFile {
             tmux::enable_passthrough()?;
         }
 
-        config.album_art.method = match self.image_method.unwrap_or(album_art_method) {
-            ImageMethodFile::Iterm2 => ImageMethod::Iterm2,
-            ImageMethodFile::Kitty => ImageMethod::Kitty,
-            ImageMethodFile::UeberzugWayland if image::is_ueberzug_wayland_supported() => {
-                ImageMethod::UeberzugWayland
-            }
-            ImageMethodFile::UeberzugWayland => ImageMethod::Unsupported,
-            ImageMethodFile::UeberzugX11 if image::is_ueberzug_x11_supported() => {
-                ImageMethod::UeberzugX11
-            }
-            ImageMethodFile::UeberzugX11 => ImageMethod::Unsupported,
-            ImageMethodFile::Sixel => ImageMethod::Sixel,
-            ImageMethodFile::Block => ImageMethod::Block,
-            ImageMethodFile::None => ImageMethod::None,
-            ImageMethodFile::Auto => match image::determine_image_support(is_tmux)? {
-                ImageProtocol::Kitty => ImageMethod::Kitty,
-                ImageProtocol::UeberzugWayland => ImageMethod::UeberzugWayland,
-                ImageProtocol::UeberzugX11 => ImageMethod::UeberzugX11,
-                ImageProtocol::Iterm2 => ImageMethod::Iterm2,
-                ImageProtocol::Sixel => ImageMethod::Sixel,
-                ImageProtocol::Block => ImageMethod::Block,
-                ImageProtocol::None => ImageMethod::Unsupported,
-            },
-        };
-
-        match config.album_art.method {
-            ImageMethod::Unsupported => {
-                status_warn!(
-                    "Album art is enabled but no image protocol is supported by your terminal, disabling album art"
-                );
-            }
-            ImageMethod::None => {}
-            ImageMethod::Kitty
-            | ImageMethod::UeberzugWayland
-            | ImageMethod::UeberzugX11
-            | ImageMethod::Iterm2
-            | ImageMethod::Sixel
-            | ImageMethod::Block => {
-                log::debug!(resolved:? = config.album_art.method, requested:? = album_art_method, is_tmux; "Image method resolved");
-            }
-        }
+        config.album_art.method =
+            TERMINAL.resolve_image_backend(self.image_method.unwrap_or(album_art_method));
 
         Ok(config)
     }

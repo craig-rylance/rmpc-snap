@@ -29,6 +29,8 @@ All notable changes to this project will be documented in this file.
 - Added `album_date_tags` config option to specify priority order of metadata tags for album dates
 - Added an ability to specify relative/absolute theme path in config file
 - Added `keep_state_on_song_change` and equivalent flag to cli
+- Added `ignore_leading_the` when sorting entries in browsers
+- More information about the system to debuginfo
 
 ### Changed
 
@@ -50,6 +52,8 @@ remote commands inside scripts triggered by rmpc
 - Paused playback state is now kept by default when using the `NextTrack/PreviousTrack` keybinds. Use 
 `keep_state_on_song_change` to disable this 
 - Default theme now includes lyrics pane above the album art on queue tab
+- Browsers now properly use case insensitive sorting
+- Refactored and improved image backend detection
 
 ### Fixed
 
@@ -60,7 +64,11 @@ scrolled down
 - Adding entries without album adding not intended songs when using split by date
 - Volume parsing if MPD's volume was set to higher value than 255 via external means
 - Fix improper handling of remote theme change
-- Attempted to fix yt-dlp cache on non linux platforms
+- Tilde not being expanded for yt-dlp on non-linux platforms
+- Remove mention of `tab_bar.enabled` from docs
+- Konsole terminal now does not autodetect to Kitty image protocol, it instead uses ueberzugpp if
+available and Block if not
+- Fix Iterm2 image protocol sometimes rendering too late
 
 ## [0.9.0] - 2025-06-23
 
