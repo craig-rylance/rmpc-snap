@@ -2,4 +2,11 @@
 set -e
 mkdir -p "$SNAP_COMMON/Music"
 mkdir -p "$SNAP_COMMON/playlists"
-cp "$SNAP/etc/rmpc/config.ron" "$SNAP_COMMON/config.ron"
+if [ ! -f "$SNAP_COMMON/config.ron" ]; then
+  cp "$SNAP/etc/rmpc/config.ron" "$SNAP_COMMON/config.ron"
+fi
+if [ ! -d "$SNAP_COMMON/mpd" ]; then
+    mkdir "$SNAP_COMMON/mpd"
+    chmod 770 "$SNAP_COMMON/mpd" # must be before chown
+    chown snap_daemon "$SNAP_COMMON/mpd"
+fi

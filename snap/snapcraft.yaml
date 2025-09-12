@@ -7,7 +7,10 @@ description: |
   Written by Mierak on Github. Find the upstream code at https://github.com/mierak/rmpc and documentation on their website https://mierak.github.io/rmpc/
 
 grade: devel # must be 'stable' to release into candidate/stable channels
-confinement: devmode
+confinement: strict
+
+system-usernames:
+  snap_daemon: shared
 
 parts:
   rmpc:
@@ -48,8 +51,8 @@ apps:
       - network-bind
     environment:
       MPD_CONFIG: $SNAP/etc/rmpc/mpd.conf
-      "LD_LIBRARY_PATH": "$LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$SNAP/usr/lib/x86_64-linux-gnu/samba:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio"
-      PULSE_SERVER: unix:/run/user/1000/pulse/native
+      LD_LIBRARY_PATH: "$LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$SNAP/usr/lib/x86_64-linux-gnu/samba:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio"
+      XDG_RUNTIME_DIR: $SNAP_COMMON/mpd
   mpc:
     command: usr/bin/mpc
     plugs:
