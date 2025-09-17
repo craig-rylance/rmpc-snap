@@ -54,6 +54,7 @@ remote commands inside scripts triggered by rmpc
 - Default theme now includes lyrics pane above the album art on queue tab
 - Browsers now properly use case insensitive sorting
 - Refactored and improved image backend detection
+- `JumpToCurrent` now jumps to last playing song in stopped state
 
 ### Fixed
 
@@ -69,6 +70,7 @@ scrolled down
 - Konsole terminal now does not autodetect to Kitty image protocol, it instead uses ueberzugpp if
 available and Block if not
 - Fix Iterm2 image protocol sometimes rendering too late
+- Fix playlists not using playlist style and icon in the Playlists pane
 
 ## [0.9.0] - 2025-06-23
 
