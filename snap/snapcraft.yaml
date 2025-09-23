@@ -6,7 +6,7 @@ description: |
   Rmpc is a beautiful, modern and configurable terminal based Music Player Daemon client. It was inspired by ncmpcpp and aims to provide an alternative with support for album art through kitty image protocol without any ugly hacks. It also features ranger/lf inspired browsing of songs and other goodies.
   Written by Mierak on Github. Find the upstream code at https://github.com/mierak/rmpc and documentation on their website https://mierak.github.io/rmpc/
 
-grade: devel # must be 'stable' to release into candidate/stable channels
+grade: stable # must be 'stable' to release into candidate/stable channels
 confinement: strict
 
 # system-usernames:
