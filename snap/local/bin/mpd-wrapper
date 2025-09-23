@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+LOG_FILE="$SNAP_COMMON/log/mpd.log"
+
+#mkdir -p "$XDG_RUNTIME_DIR"
+
+export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:$PATH"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$SNAP/lib:$SNAP/usr/lib:$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu"
+
+if [ -n "$XDG_RUNTIME_DIR" ]; then
+    pulseaudio_sockpath="/run/user/1000/pulse/native"
+    if [ -S "$pulseaudio_sockpath" ]; then
+        export PULSE_SERVER="unix:${pulseaudio_sockpath}"
+        echo "Found PulseAudio at: $PULSE_SERVER" >> "$LOG_FILE"
+    else
+        echo "PulseAudio socket not found at: $pulseaudio_sockpath" >> "$LOG_FILE"
+    fi
+fi
+
+export HOME="$SNAP_COMMON"
+
+exec "$SNAP/usr/bin/mpd" --no-daemon "$SNAP/etc/rmpc/mpd.conf"

@@ -7,39 +7,41 @@ description: |
   Written by Mierak on Github. Find the upstream code at https://github.com/mierak/rmpc and documentation on their website https://mierak.github.io/rmpc/
 
 grade: devel # must be 'stable' to release into candidate/stable channels
-confinement: classic
+confinement: strict
 
-system-usernames:
-  snap_daemon: shared
+# system-usernames:
+#   snap_daemon: shared
 
 parts:
   rmpc:
     source: https://github.com/mierak/rmpc.git
     plugin: rust
-  mpd:
-    plugin: nil
-    stage-packages:
-      - mpd
-      - libaudio2
-      - samba-libs
-  mpc:
-    plugin: nil
-    stage-packages:
-      - mpc
-  audio-bridge:
-    plugin: dump
-    source: snap/local/
-    source-type: local
-    stage-packages:
-      - socat
-    organize:
-      bridge-wrapper: bin/bridge-wrapper
+  # mpd:
+  #   plugin: nil
+  #   stage-packages:
+  #     - mpd
+  #     - libaudio2
+  #     - samba-libs
+  # mpc:
+  #   plugin: nil
+  #   stage-packages:
+  #     - mpc
+  # audio-bridge:
+  #   plugin: nil
+  #   stage-packages:
+  #     - socat
   configuration:
     plugin: dump
     source: snap/local/config/
     source-type: local
     organize:
       '*': etc/rmpc/
+  # wrappers:
+  #   plugin: dump
+  #   source: snap/local/bin
+  #   source-type: local
+  #   organize:
+  #     '*': bin/
 
 apps:
   rmpc:
@@ -49,38 +51,35 @@ apps:
       - network
       - network-bind
       - home
-      - desktop-legacy
-      - desktop
-    environment:
-      RMPC_CONFIG: $SNAP_COMMON/config.ron
-  mpd:
-    command: usr/bin/mpd --no-daemon $SNAP/etc/rmpc/mpd.conf
-    daemon: simple
-    plugs:
-      - audio-playback
-      - network
-      - network-bind
-      - home
-      - desktop-legacy
-      - desktop
-    environment:
-      MPD_CONFIG: $SNAP/etc/rmpc/mpd.conf
-      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu/alsa:$SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$SNAP/usr/lib/x86_64-linux-gnu/samba:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio:$SNAP/usr/lib/x86_64-linux-gnu/oss4-libsalsa/:$SNAP/usr/lib/x86_64-linux-gnu
-      XDG_RUNTIME_DIR: $SNAP_COMMON/mpd
-  mpc:
-    command: usr/bin/mpc
-    plugs:
-      - network
-      - network-bind
-      - home
-      - desktop-legacy
-      - desktop
-  audio-bridge: # Need to change the owner of pulse-bridge to snap_daemon and this works in classic
-    command: bin/bridge-wrapper
-    daemon: simple
-    plugs:
-      - home
-      - network
-      - network-bind
-      - desktop-legacy
-      - desktop
+  # mpd: # launch command: usr/bin/mpd --no-daemon $SNAP/etc/rmpc/mpd.conf
+  #   command: bin/mpd-wrapper
+  #   daemon: simple
+  #   plugs:
+  #     - audio-playback
+  #     - network
+  #     - network-bind
+  #     - home
+  #     - desktop-legacy
+  #     - desktop
+  #     - pulseaudio
+  #   environment:
+  #     LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu/alsa:$SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$SNAP/usr/lib/x86_64-linux-gnu/samba:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio:$SNAP/usr/lib/x86_64-linux-gnu/oss4-libsalsa/:$SNAP/usr/lib/x86_64-linux-gnu
+  #     XDG_CONFIG_HOME: $SNAP_COMMON
+  #     XDG_MUSIC_DIR: $SNAP_COMMON/Music
+  #     HOME: $SNAP_COMMON
+  # mpc:
+  #   command: usr/bin/mpc
+  #   plugs:
+  #     - network
+  #     - network-bind
+  #     - home
+  #     - desktop-legacy
+  #     - desktop
+  # audio-bridge: # Needed since mpd runs as snap_daemon and can't access /run/user/1000/pulse/native
+  #   command: bin/bridge-wrapper
+  #   daemon: simple
+  #   plugs:
+  #     - network
+  #     - network-bind
+  #     - desktop-legacy
+  #     - desktop
