@@ -95,11 +95,11 @@
             "D":         Delete,
             "B":         ShowInfo,
             "<C-z>":     ContextMenu(),
+            "<C-s>":     Save(kind: Modal(all: false, duplicates_strategy: Ask)),
         },
         queue: {
             "D":       DeleteAll,
             "<CR>":    Play,
-            "<C-s>":   Save,
             "a":       AddToPlaylist,
             "d":       Delete,
             "C":       JumpToCurrent,
@@ -109,6 +109,7 @@
     search: (
         case_sensitive: false,
         ignore_diacritics: false,
+        search_button: false,
         mode: Contains,
         tags: [
             (value: "any",         label: "Any Tag"),

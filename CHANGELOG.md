@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added --interactive: interactive picker (TUI list / CLI prompt) with --limit N for `searchyt`.
 - Added youtube song by name support: `searchyt "query"` (uses first YouTube result; TUI supported).
 - Added interactive scrollbar support to browser panes and search pane results:
 - Added `rmpc remote keybind` command to emulate key presses in running instances
@@ -37,10 +38,16 @@ browser panes as well as searched for in the Search pane
 - Liked state support, songs can now be liked, disliked or set to neutral and searched for in the
 Search pane
 - Added `Replace` transform
+- Added section filter to docs search
+- `search_button` config option for search pane
+- Configurable `Save()` keybind in the navigation section
+- Added `SeekToStart` global action to seek to the beginning of the currently playing track
 
 ### Changed
 
 - **Breaking**: TabName equality comparison is now case-insensitive.
+- **Breaking**: `$SELECTED_SONGS` in queue now contains marked songs as well
+- Add support for soundcloud on `searchyt`
 - Improved `.lrc` lyrics files parser performance and fixed parsing issues
 - Normalized duration formatting across `QueueTimeTotal` and `QueueTimeRemaining` properties for both standard (MM:SS/H:MM:SS) and verbose formats
 - Confirm action in browsers, which either opens a directory or adds the hovered song to the queue
@@ -61,9 +68,11 @@ remote commands inside scripts triggered by rmpc
 - Browsers now properly use case insensitive sorting
 - Refactored and improved image backend detection
 - `JumpToCurrent` now jumps to last playing song in stopped state
+- Directories now keep their state when going back out of them
 
 ### Fixed
 
+- Config deserialization errors are now printed to stderr during startup, making them visible even when subsequent initialization steps fail
 - Fixed `QueueTimeRemaining` not updating remaining time
 - `ModalClosed` event now correctly gets dispatched only after all modals were closed
 - Preview no longer disappears in search when returning to the search form while the results are
@@ -77,6 +86,13 @@ scrolled down
 available and Block if not
 - Fix Iterm2 image protocol sometimes rendering too late
 - Fix playlists not using playlist style and icon in the Playlists pane
+- Order of added songs when adding them from browser panes
+- Marked items in Queue not being cleared on database update
+
+### Deprecated
+
+- `Save` keybind in the queue section. Use the new configurable `Save()` keybind in the navigation
+section instead
 
 ## [0.9.0] - 2025-06-23
 
@@ -202,7 +218,7 @@ available and Block if not
 - Increased default album art `max_size_px` to `(1200, 1200)`.
 - Improved navigation between Pane splits by including recency bias
 - CLI now parses only the required part of the config
-- Status messages will now disappar automatically even when idle
+- Status messages will now disappear automatically even when idle
 - Lyrics should now sync better because they are now scheduled precisely instead of periodically
 - MSRV to 1.82
 - Song metadata is now split into groups

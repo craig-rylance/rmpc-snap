@@ -108,6 +108,14 @@ impl Section for MultiActionSection<'_> {
         true
     }
 
+    fn selected(&self) -> Option<usize> {
+        self.selected_idx
+    }
+
+    fn select(&mut self, idx: usize) {
+        self.selected_idx = Some(idx);
+    }
+
     fn unselect(&mut self) {
         self.selected_idx = None;
     }
@@ -128,8 +136,41 @@ impl Section for MultiActionSection<'_> {
         self.items.len()
     }
 
-    fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        Widget::render(self, area, buf);
+    fn preferred_height(&self) -> u16 {
+        self.items.len() as u16
+    }
+
+    fn render(&mut self, area: Rect, buf: &mut Buffer, filter: Option<&str>, ctx: &Ctx) {
+        self.area = area;
+
+        for (idx, item) in self.items.iter_mut().enumerate() {
+            let mut text = Text::raw(&item.label);
+
+            if self.selected_idx.is_some_and(|i| i == idx) {
+                text = text.style(self.current_item_style);
+            } else if let Some(f) = filter
+                && item.label.to_lowercase().contains(f)
+            {
+                text = text.style(ctx.config.theme.highlighted_item_style);
+            }
+
+            let mut item_area = area.shrink_from_top(idx as u16);
+            item_area.height = 1;
+            let [label_area, buttons_area] =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .spacing(1)
+                    .areas(item_area);
+
+            text.render(label_area, buf);
+
+            if self.selected_idx.is_some_and(|i| i == idx) {
+                item.buttons.set_active_style(self.current_item_style);
+            } else {
+                item.buttons.set_active_style(Style::default());
+            }
+
+            item.buttons.render(buttons_area, buf, &mut item.buttons_state);
+        }
     }
 
     fn left_click(&mut self, position: Position) {
@@ -157,35 +198,8 @@ impl Section for MultiActionSection<'_> {
         self.confirm(ctx)?;
         Ok(false)
     }
-}
 
-impl Widget for &mut MultiActionSection<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.area = area;
-
-        for (idx, item) in self.items.iter_mut().enumerate() {
-            let mut text = Text::raw(&item.label);
-
-            if self.selected_idx.is_some_and(|i| i == idx) {
-                text = text.style(self.current_item_style);
-            }
-
-            let mut item_area = area.shrink_from_top(idx as u16);
-            item_area.height = 1;
-            let [label_area, buttons_area] =
-                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .spacing(1)
-                    .areas(item_area);
-
-            text.render(label_area, buf);
-
-            if self.selected_idx.is_some_and(|i| i == idx) {
-                item.buttons.set_active_style(self.current_item_style);
-            } else {
-                item.buttons.set_active_style(Style::default());
-            }
-
-            item.buttons.render(buttons_area, buf, &mut item.buttons_state);
-        }
+    fn item_labels_iter(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.items.iter().map(|i| i.label.as_str()))
     }
 }

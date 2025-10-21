@@ -19,6 +19,7 @@ pub const STRIP_DIACRITICS_KEY: &str = "strip_diacritics";
 pub const RATING_MODE_KEY: &str = "rating";
 pub const RATING_VALUE_KEY: &str = "rating_value";
 pub const RESET_BUTTON_KEY: &str = "reset";
+pub const SEARCH_BUTTON_KEY: &str = "search_button";
 pub const LIKE_KEY: &str = "like";
 
 #[derive(derive_more::Debug)]
@@ -26,6 +27,7 @@ pub const LIKE_KEY: &str = "like";
 pub(super) struct InputGroups {
     pub inputs: Vec<InputType>,
 
+    search_button: bool,
     initial_fold_case: bool,
     initial_strip_diacritics: bool,
 
@@ -52,6 +54,7 @@ impl InputGroups {
         search_config: &Search,
         initial_fold_case: bool,
         initial_strip_diacritics: bool,
+        search_button: bool,
         stickers_supported: bool,
         strip_diacritics_supported: bool,
         text_style: Style,
@@ -115,12 +118,20 @@ impl InputGroups {
             label: " Reset".to_owned(),
         }));
 
+        if search_button {
+            inputs.push(InputType::Button(ButtonInput {
+                key: SEARCH_BUTTON_KEY,
+                label: " Search".to_owned(),
+            }));
+        }
+
         Self {
             inputs,
 
             focused_idx: 0,
             area: Rect::default(),
 
+            search_button,
             initial_fold_case,
             initial_strip_diacritics,
             insert_mode: false,
@@ -144,6 +155,10 @@ impl InputGroups {
 
     pub fn rating_value(&self) -> &str {
         self.textbox_value(RATING_VALUE_KEY).unwrap_or_default()
+    }
+
+    pub fn is_rating_filter_active(&self) -> bool {
+        !matches!(self.rating_mode, RatingMode::Any)
     }
 
     pub fn rating_filter(&self) -> Result<Option<StickerFilter>, std::num::ParseIntError> {
@@ -189,11 +204,12 @@ impl InputGroups {
         &self.inputs[self.focused_idx]
     }
 
-    pub fn activate_focused(&mut self) -> bool {
+    pub fn activate_focused(&mut self) -> ActionResult {
         match &mut self.inputs[self.focused_idx] {
             InputType::Textbox(_) | InputType::Numberbox(_) => {
                 self.insert_mode = !self.insert_mode;
-                true
+
+                if self.search_button { ActionResult::None } else { ActionResult::Search }
             }
             InputType::Spinner(input) => {
                 match input.key {
@@ -221,14 +237,16 @@ impl InputGroups {
                     _ => {}
                 }
 
-                true
+                if self.search_button { ActionResult::None } else { ActionResult::Search }
             }
             InputType::Button(ButtonInput { key: RESET_BUTTON_KEY, .. }) => {
                 self.reset_all();
-                true
+
+                ActionResult::Reset
             }
-            InputType::Button(_) => false,
-            InputType::Separator => false,
+            InputType::Button(ButtonInput { key: SEARCH_BUTTON_KEY, .. }) => ActionResult::Search,
+            InputType::Button(_) => ActionResult::None,
+            InputType::Separator => ActionResult::None,
         }
     }
 
@@ -282,7 +300,7 @@ impl InputGroups {
     }
 
     pub fn next_non_wrapping(&mut self) {
-        self.focused_idx = self.focused_idx.min(self.inputs.len() - 1);
+        self.focused_idx = (self.focused_idx + 1).min(self.inputs.len() - 1);
 
         if matches!(self.focused(), InputType::Separator) {
             self.next_non_wrapping();
@@ -454,6 +472,12 @@ impl LikedMode {
             *self = new;
         }
     }
+}
+
+pub(super) enum ActionResult {
+    None,
+    Search,
+    Reset,
 }
 
 #[derive(derive_more::Debug)]

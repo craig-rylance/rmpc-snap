@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Styled, Stylize},
     text::Span,
-    widgets::{Block, Borders, List, ListItem, Padding},
+    widgets::{Block, Borders, List, ListItem, ListState, Padding},
 };
 
 use super::{CommonAction, Pane};
@@ -17,7 +17,7 @@ use crate::{
     config::{
         keys::{
             GlobalAction,
-            actions::{AddKind, Position, RateKind},
+            actions::{AddKind, Position, RateKind, SaveKind},
         },
         tabs::PaneType,
     },
@@ -40,10 +40,16 @@ use crate::{
         dirstack::Dir,
         modals::{
             input_modal::InputModal,
-            menu::{create_add_modal, create_rating_modal, modal::MenuModal},
+            menu::{
+                add_to_playlist_or_show_modal,
+                create_add_modal,
+                create_rating_modal,
+                create_save_modal,
+                modal::MenuModal,
+            },
             select_modal::SelectModal,
         },
-        panes::search::inputs::{InputGroups, InputType, TextboxInput},
+        panes::search::inputs::{ActionResult, InputGroups, InputType, TextboxInput},
         widgets::browser::BrowserArea,
     },
 };
@@ -54,7 +60,7 @@ mod inputs;
 pub struct SearchPane {
     inputs: InputGroups,
     phase: Phase,
-    songs_dir: Dir<Song>,
+    songs_dir: Dir<Song, ListState>,
     column_areas: EnumMap<BrowserArea, Rect>,
 }
 
@@ -68,11 +74,12 @@ impl SearchPane {
             .search_config(&config.search)
             .initial_fold_case(!config.search.case_sensitive)
             .initial_strip_diacritics(config.search.ignore_diacritics)
+            .search_button(config.search.search_button)
             .text_style(config.as_text_style())
             .separator_style(config.theme.borders_style)
             .current_item_style(config.theme.current_item_style)
             .highlight_item_style(config.theme.highlighted_item_style)
-            .stickers_supported(ctx.stickers_supported)
+            .stickers_supported(ctx.stickers_supported.into())
             .strip_diacritics_supported(ctx.mpd_version >= Version::new(0, 25, 0))
             .build();
 
@@ -145,8 +152,10 @@ impl SearchPane {
             }
             b.padding(Padding::new(0, column_right_padding, 0, 0))
         };
-        let current = List::new(self.songs_dir.to_list_items(ctx))
-            .highlight_style(config.theme.current_item_style);
+        let current = List::new(
+            self.songs_dir.to_list_items(ctx.config.theme.browser_song_format.0.as_slice(), ctx),
+        )
+        .highlight_style(config.theme.current_item_style);
         let directory = &mut self.songs_dir;
 
         directory.state.set_content_and_viewport_len(directory.items.len(), area.height.into());
@@ -169,6 +178,14 @@ impl SearchPane {
         }
     }
 
+    /// Trigger search if search should be done on any change. Does nothing when
+    /// a dedicated search button is used.
+    fn maybe_search_on_change(&mut self, ctx: &Ctx) {
+        if !ctx.config.search.search_button {
+            self.search(ctx);
+        }
+    }
+
     fn search(&mut self, ctx: &Ctx) {
         let search_mode = self.inputs.search_mode();
         let filter = self.inputs.inputs.iter().filter_map(|input| match &input {
@@ -180,14 +197,20 @@ impl SearchPane {
             _ => None,
         });
 
-        let stickers_supported = ctx.stickers_supported;
+        let stickers_supported = ctx.stickers_supported.into();
         let fold_case = self.inputs.fold_case();
         let strip_diacritics = self.inputs.strip_diacritics();
-        let Ok(rating_filter) = self.inputs.rating_filter() else {
-            status_error!("Rating must be a valid integer {:?}", self.inputs.rating_value());
-            return;
-        };
         let liked_filter = self.inputs.liked_filter();
+
+        let rating_filter = if self.inputs.is_rating_filter_active() {
+            let Ok(rating_filter) = self.inputs.rating_filter() else {
+                status_error!("Rating must be a valid integer {:?}", self.inputs.rating_value());
+                return;
+            };
+            rating_filter
+        } else {
+            None
+        };
 
         let mut filter = filter.collect_vec();
 
@@ -350,8 +373,15 @@ impl SearchPane {
                 CommonAction::Rename => {}
                 CommonAction::Close => {}
                 CommonAction::Confirm => {
-                    if self.inputs.activate_focused() {
-                        self.search(ctx);
+                    match self.inputs.activate_focused() {
+                        ActionResult::Search => {
+                            self.search(ctx);
+                        }
+                        ActionResult::Reset => {
+                            self.inputs.reset_focused();
+                            self.songs_dir = Dir::default();
+                        }
+                        ActionResult::None => {}
                     }
                     ctx.render()?;
                 }
@@ -379,7 +409,11 @@ impl SearchPane {
                 // This action only makes sense when opts.all is true while we are on the
                 // search column.
                 CommonAction::AddOptions { kind: AddKind::Action(_) } => {}
-                CommonAction::Delete => self.inputs.reset_focused(),
+                CommonAction::Delete => {
+                    self.inputs.reset_focused();
+                    self.songs_dir = Dir::default();
+                    ctx.render()?;
+                }
                 CommonAction::PaneDown => {}
                 CommonAction::PaneUp => {}
                 CommonAction::PaneRight => {}
@@ -390,6 +424,30 @@ impl SearchPane {
                     event.abandon();
                 }
                 CommonAction::Rate { .. } => {}
+                CommonAction::Save {
+                    kind: SaveKind::Playlist { name, all: true, duplicates_strategy },
+                } => {
+                    let song_paths: Vec<String> =
+                        self.items(true).map(|(_, song)| song.file.clone()).collect();
+                    if song_paths.is_empty() {
+                        status_warn!("No songs selected to save");
+                        return Ok(());
+                    }
+
+                    add_to_playlist_or_show_modal(name, song_paths, duplicates_strategy, ctx);
+                }
+                CommonAction::Save { kind: SaveKind::Modal { all: true, duplicates_strategy } } => {
+                    let song_paths: Vec<String> =
+                        self.items(true).map(|(_, song)| song.file.clone()).collect();
+                    if song_paths.is_empty() {
+                        status_warn!("No songs selected to save");
+                        return Ok(());
+                    }
+
+                    let modal = create_save_modal(song_paths, None, duplicates_strategy, ctx)?;
+                    modal!(ctx, modal);
+                }
+                CommonAction::Save { .. } => {}
             }
         }
 
@@ -400,10 +458,11 @@ impl SearchPane {
         let Phase::BrowseResults { filter_input_on } = &mut self.phase else {
             return Ok(());
         };
+        let song_format = ctx.config.theme.browser_song_format.0.as_slice();
         match event.as_common_action(ctx) {
             Some(CommonAction::Close) => {
                 *filter_input_on = false;
-                self.songs_dir.set_filter(None, ctx);
+                self.songs_dir.set_filter(None, song_format, ctx);
 
                 ctx.render()?;
             }
@@ -416,13 +475,13 @@ impl SearchPane {
                 event.stop_propagation();
                 match event.code() {
                     KeyCode::Char(c) => {
-                        self.songs_dir.push_filter(c, ctx);
-                        self.songs_dir.jump_first_matching(ctx);
+                        self.songs_dir.push_filter(c, song_format, ctx);
+                        self.songs_dir.jump_first_matching(song_format, ctx);
 
                         ctx.render()?;
                     }
                     KeyCode::Backspace => {
-                        self.songs_dir.pop_filter(ctx);
+                        self.songs_dir.pop_filter(song_format, ctx);
 
                         ctx.render()?;
                     }
@@ -515,18 +574,26 @@ impl SearchPane {
                     ctx.render()?;
                 }
                 CommonAction::EnterSearch => {
-                    self.songs_dir.set_filter(Some(String::new()), ctx);
+                    self.songs_dir.set_filter(
+                        Some(String::new()),
+                        ctx.config.theme.browser_song_format.0.as_slice(),
+                        ctx,
+                    );
                     *filter_input_on = true;
 
                     ctx.render()?;
                 }
                 CommonAction::NextResult => {
-                    self.songs_dir.jump_next_matching(ctx);
+                    self.songs_dir
+                        .jump_next_matching(ctx.config.theme.browser_song_format.0.as_slice(), ctx);
 
                     ctx.render()?;
                 }
                 CommonAction::PreviousResult => {
-                    self.songs_dir.jump_previous_matching(ctx);
+                    self.songs_dir.jump_previous_matching(
+                        ctx.config.theme.browser_song_format.0.as_slice(),
+                        ctx,
+                    );
 
                     ctx.render()?;
                 }
@@ -603,7 +670,7 @@ impl SearchPane {
                 CommonAction::PaneLeft => {}
                 CommonAction::ShowInfo => {}
                 CommonAction::ContextMenu => {
-                    self.open_result_phase_context_menu(ctx)?;
+                    self.open_result_phase_context_menu(ctx);
                 }
                 CommonAction::Rate {
                     kind: RateKind::Value(value),
@@ -661,13 +728,36 @@ impl SearchPane {
                 CommonAction::Rate { kind: _, current: true, min_rating: _, max_rating: _ } => {
                     event.abandon();
                 }
+                CommonAction::Save {
+                    kind: SaveKind::Playlist { name, all, duplicates_strategy },
+                } => {
+                    let song_paths: Vec<String> =
+                        self.items(all).map(|(_, song)| song.file.clone()).collect();
+                    if song_paths.is_empty() {
+                        status_warn!("No songs selected to save");
+                        return Ok(());
+                    }
+
+                    add_to_playlist_or_show_modal(name, song_paths, duplicates_strategy, ctx);
+                }
+                CommonAction::Save { kind: SaveKind::Modal { all, duplicates_strategy } } => {
+                    let song_paths: Vec<_> =
+                        self.items(all).map(|(_, song)| song.file.clone()).collect();
+                    if song_paths.is_empty() {
+                        status_warn!("No songs selected to save");
+                        return Ok(());
+                    }
+
+                    let modal = create_save_modal(song_paths, None, duplicates_strategy, ctx)?;
+                    modal!(ctx, modal);
+                }
             }
         }
 
         Ok(())
     }
 
-    fn open_result_phase_context_menu(&self, ctx: &Ctx) -> Result<()> {
+    fn open_result_phase_context_menu(&self, ctx: &Ctx) {
         let modal = MenuModal::new(ctx)
             .list_section(ctx, move |mut section| {
                 if !self.songs_dir.items.is_empty() {
@@ -803,7 +893,6 @@ impl SearchPane {
             })
             .build();
         modal!(ctx, modal);
-        Ok(())
     }
 
     fn scrollbar_area(&self) -> Option<Rect> {
@@ -880,9 +969,11 @@ impl Pane for SearchPane {
 
                 // Render only the part of the preview that is actually supposed to be shown
                 let offset = self.songs_dir.state.offset();
-                let items = self
-                    .songs_dir
-                    .to_list_items_range(offset..offset + previous_area.height as usize, ctx);
+                let items = self.songs_dir.to_list_items_range(
+                    offset..offset + previous_area.height as usize,
+                    ctx.config.theme.browser_song_format.0.as_slice(),
+                    ctx,
+                );
                 let preview = List::new(items).style(ctx.config.as_text_style());
                 frame.render_widget(preview, preview_area);
             }
@@ -946,6 +1037,7 @@ impl Pane for SearchPane {
     ) -> Result<()> {
         match (id, data) {
             (SEARCH, MpdQueryResult::SearchResult { data }) => {
+                status_info!("Found {} matching songs", data.len());
                 self.songs_dir = Dir::new(data);
                 ctx.render()?;
             }
@@ -1015,7 +1107,7 @@ impl Pane for SearchPane {
                         if self.inputs.insert_mode {
                             self.phase = Phase::Search;
                             self.inputs.insert_mode = false;
-                            self.search(ctx);
+                            self.maybe_search_on_change(ctx);
                         }
 
                         self.inputs.focus_input_at(event.into());
@@ -1037,10 +1129,17 @@ impl Pane for SearchPane {
             }
             MouseEventKind::DoubleClick => match self.phase {
                 Phase::Search => {
-                    if self.column_areas[BrowserArea::Current].contains(event.into())
-                        && self.inputs.activate_focused()
-                    {
-                        self.search(ctx);
+                    if self.column_areas[BrowserArea::Current].contains(event.into()) {
+                        match self.inputs.activate_focused() {
+                            ActionResult::Search => {
+                                self.search(ctx);
+                            }
+                            ActionResult::Reset => {
+                                self.inputs.reset_focused();
+                                self.songs_dir = Dir::default();
+                            }
+                            ActionResult::None => {}
+                        }
                     }
                     ctx.render()?;
                 }
@@ -1085,7 +1184,7 @@ impl Pane for SearchPane {
                     if self.inputs.insert_mode {
                         self.inputs.insert_mode = false;
                         self.phase = Phase::Search;
-                        self.search(ctx);
+                        self.maybe_search_on_change(ctx);
                     }
                     self.inputs.next_non_wrapping();
                     ctx.render()?;
@@ -1100,7 +1199,7 @@ impl Pane for SearchPane {
                     if self.inputs.insert_mode {
                         self.inputs.insert_mode = false;
                         self.phase = Phase::Search;
-                        self.search(ctx);
+                        self.maybe_search_on_change(ctx);
                     }
                     self.inputs.prev_non_wrapping();
                     ctx.render()?;
@@ -1118,7 +1217,7 @@ impl Pane for SearchPane {
                         self.songs_dir.select_idx(idx, ctx.config.scrolloff);
                         ctx.render()?;
                     }
-                    self.open_result_phase_context_menu(ctx)?;
+                    self.open_result_phase_context_menu(ctx);
                 }
                 _ => {}
             },
@@ -1138,15 +1237,27 @@ impl Pane for SearchPane {
                 Some(CommonAction::Close) => {
                     self.phase = Phase::Search;
                     self.inputs.insert_mode = false;
-                    self.search(ctx);
+                    if let InputType::Numberbox(TextboxInput { value, .. }) =
+                        self.inputs.focused_mut()
+                        && value.is_empty()
+                    {
+                        value.push('0');
+                    }
 
+                    self.maybe_search_on_change(ctx);
                     ctx.render()?;
                 }
                 Some(CommonAction::Confirm) => {
                     self.phase = Phase::Search;
                     self.inputs.insert_mode = false;
-                    self.search(ctx);
+                    if let InputType::Numberbox(TextboxInput { value, .. }) =
+                        self.inputs.focused_mut()
+                        && value.is_empty()
+                    {
+                        value.push('0');
+                    }
 
+                    self.maybe_search_on_change(ctx);
                     ctx.render()?;
                 }
                 _ => {

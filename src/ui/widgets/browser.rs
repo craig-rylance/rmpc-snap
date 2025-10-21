@@ -2,7 +2,7 @@ use enum_map::{Enum, EnumMap};
 use itertools::Itertools;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, Padding},
+    widgets::{Block, Borders, List, ListItem, ListState, Padding},
 };
 use style::Styled;
 
@@ -60,10 +60,11 @@ where
         &mut self,
         area: ratatui::prelude::Rect,
         buf: &mut ratatui::prelude::Buffer,
-        state: &mut DirStack<T>,
+        state: &mut DirStack<T, ListState>,
         ctx: &Ctx,
     ) {
         let config = &ctx.config;
+        let song_format = ctx.config.theme.browser_song_format.0.as_slice();
         let scrollbar_margin = match config.theme.scrollbar.as_ref() {
             Some(scrollbar) if config.theme.draw_borders => {
                 let scrollbar_track = &scrollbar.symbols[0];
@@ -73,8 +74,7 @@ where
         };
         let column_right_padding: u16 = config.theme.scrollbar.is_some().into();
 
-        let previous = state.previous().to_list_items(ctx);
-        let current = state.current().to_list_items(ctx);
+        let current = state.current().to_list_items(song_format, ctx);
 
         let [previous_area, current_area, preview_area] = *Layout::horizontal([
             Constraint::Percentage(config.theme.column_widths[0]),
@@ -106,12 +106,17 @@ where
 
                 result
             } else if state.current().selected().is_some() {
-                state.preview().map_or(Vec::new(), |p| {
+                let items = state.next_dir_items().map_or(Vec::new(), |p| {
                     p.iter()
                         .take(self.areas[BrowserArea::Preview].height as usize)
                         .map(|item| item.to_list_item_simple(ctx))
                         .collect_vec()
-                })
+                });
+                if let Some(next) = state.next_mut() {
+                    next.state
+                        .set_content_and_viewport_len(items.len(), previous_area.height.into());
+                }
+                items
             } else {
                 Vec::new()
             };
@@ -120,12 +125,15 @@ where
             ratatui::widgets::Widget::render(preview, preview_area, buf);
         }
 
-        if config.theme.column_widths[0] > 0 {
-            let title = state.previous().filter().as_ref().map(|v| format!("[FILTER]: {v} "));
-            let prev_state = &mut state.previous_mut().state;
-            prev_state.set_content_and_viewport_len(previous.len(), previous_area.height.into());
+        if let Some(previous) = state.previous_mut()
+            && config.theme.column_widths[0] > 0
+        {
+            let items = previous.to_list_items(song_format, ctx);
+            let title = previous.filter().as_ref().map(|v| format!("[FILTER]: {v} "));
+            let prev_state = &mut previous.state;
+            prev_state.set_content_and_viewport_len(items.len(), previous_area.height.into());
 
-            let mut previous = List::new(previous).style(config.as_text_style());
+            let mut previous = List::new(items).style(config.as_text_style());
             let mut block = if config.theme.draw_borders {
                 Block::default()
                     .borders(Borders::RIGHT)

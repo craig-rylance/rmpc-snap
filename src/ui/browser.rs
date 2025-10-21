@@ -2,34 +2,38 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use enum_map::EnumMap;
 use itertools::Itertools;
-use ratatui::prelude::Rect;
+use ratatui::{prelude::Rect, widgets::ListState};
 
-use super::{
-    dirstack::{DirStack, DirStackItem},
-    panes::Pane,
-};
 use crate::{
     MpdQueryResult,
     config::keys::{
         CommonAction,
         GlobalAction,
-        actions::{AddKind, Position, RateKind},
+        actions::{AddKind, Position, RateKind, SaveKind},
     },
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
     mpd::{client::Client, commands::Song, mpd_client::MpdClient},
     shared::{
         key_event::KeyEvent,
-        macros::modal,
+        macros::{modal, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
         mpd_client_ext::{Autoplay, Enqueue, MpdClientExt, MpdDelete},
         mpd_query::EXTERNAL_COMMAND,
     },
     ui::{
+        dirstack::{DirStack, DirStackItem, WalkDirStackItem},
         modals::{
             input_modal::InputModal,
-            menu::{create_add_modal, create_rating_modal, modal::MenuModal},
+            menu::{
+                add_to_playlist_or_show_modal,
+                create_add_modal,
+                create_rating_modal,
+                create_save_modal,
+                modal::MenuModal,
+            },
             select_modal::SelectModal,
         },
+        panes::Pane,
         widgets::browser::BrowserArea,
     },
 };
@@ -45,8 +49,8 @@ pub(in crate::ui) trait BrowserPane<T>: Pane
 where
     T: DirStackItem + std::fmt::Debug + Clone + Send + Sync + 'static,
 {
-    fn stack(&self) -> &DirStack<T>;
-    fn stack_mut(&mut self) -> &mut DirStack<T>;
+    fn stack(&self) -> &DirStack<T, ListState>;
+    fn stack_mut(&mut self) -> &mut DirStack<T, ListState>;
     fn browser_areas(&self) -> EnumMap<BrowserArea, Rect>;
     fn scrollbar_area(&self) -> Option<Rect> {
         let areas = self.browser_areas();
@@ -60,14 +64,58 @@ where
         &self,
         item: T,
     ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Send + Sync + Clone + 'static;
-    fn prepare_preview(&mut self, ctx: &Ctx) -> Result<()>;
-    fn enqueue<'a>(&self, items: impl Iterator<Item = &'a T>) -> (Vec<Enqueue>, Option<usize>);
+    fn fetch_data(&self, selected: &T, ctx: &Ctx) -> Result<()>;
+    fn fetch_data_internal(&mut self, ctx: &Ctx) -> Result<()> {
+        // Only attempt to fetch for empty directories
+        if self.stack().next_dir_items().is_none_or(|d| d.is_empty())
+            && let Some(selected) = self.stack().current().selected()
+            && !selected.is_file()
+        {
+            self.fetch_data(selected, ctx)
+        } else {
+            Ok(())
+        }
+    }
+    fn enqueue<'a>(&self, items: impl Iterator<Item = &'a T>) -> (Vec<Enqueue>, Option<usize>) {
+        let path = self.stack().path();
+        let hovered = self.stack().current().selected();
+        let (items, idx) = items
+            .flat_map(|item| item.walk(self.stack(), path.clone()))
+            .enumerate()
+            .fold((Vec::new(), None), |mut acc, (idx, item)| {
+                let filename = item.as_path().to_owned();
+                if let Some(hovered) = hovered
+                    && hovered.is_file()
+                    && hovered.as_path() == filename
+                {
+                    acc.1 = Some(idx);
+                }
+                acc.0.push(Enqueue::File { path: filename });
+
+                acc
+            });
+
+        (items, idx)
+    }
     fn open(&mut self, ctx: &Ctx) -> Result<()>;
     fn show_info(&self, item: &T, ctx: &Ctx) -> Result<()> {
         Ok(())
     }
-    fn initial_playlist_name(&self) -> Option<String> {
-        None
+
+    fn initial_playlist_name(&self, all: bool) -> Option<String> {
+        if all {
+            return self.stack().path().current_dir().map(|v| v.to_owned());
+        }
+
+        if !self.stack().current().marked().is_empty() {
+            None
+        } else if let Some(selected) = self.stack().current().selected()
+            && !selected.is_file()
+        {
+            Some(selected.as_path().to_owned())
+        } else {
+            None
+        }
     }
 
     fn delete<'a>(&self, item: impl Iterator<Item = (usize, &'a T)>) -> Vec<MpdDelete> {
@@ -88,12 +136,14 @@ where
             return Ok(());
         }
 
+        let song_format = ctx.config.theme.browser_song_format.0.as_slice();
         let config = &ctx.config;
         match event.as_common_action(ctx) {
             Some(CommonAction::Close) => {
                 self.set_filter_input_mode_active(false);
-                self.stack_mut().current_mut().set_filter(None, ctx);
-                self.prepare_preview(ctx);
+                self.stack_mut().current_mut().set_filter(None, song_format, ctx);
+                self.fetch_data_internal(ctx);
+                ctx.render()?;
             }
             Some(CommonAction::Confirm) => {
                 self.set_filter_input_mode_active(false);
@@ -103,12 +153,13 @@ where
                 event.stop_propagation();
                 match event.code() {
                     KeyCode::Char(c) => {
-                        self.stack_mut().current_mut().push_filter(c, ctx);
-                        self.stack_mut().current_mut().jump_first_matching(ctx);
-                        self.prepare_preview(ctx);
+                        self.stack_mut().current_mut().push_filter(c, song_format, ctx);
+                        self.stack_mut().current_mut().jump_first_matching(song_format, ctx);
+                        self.fetch_data_internal(ctx);
+                        ctx.render()?;
                     }
                     KeyCode::Backspace => {
-                        self.stack_mut().current_mut().pop_filter(ctx);
+                        self.stack_mut().current_mut().pop_filter(song_format, ctx);
                         ctx.render()?;
                     }
                     _ => {}
@@ -135,7 +186,6 @@ where
                     .marked_items()
                     .map(|item| self.list_songs_in_item(item.clone()))
                     .collect();
-                let path = self.stack().path().to_owned();
                 let command = std::sync::Arc::clone(command);
                 ctx.query().id(EXTERNAL_COMMAND).query(move |client| {
                     let songs: Vec<_> = marked_items
@@ -149,7 +199,6 @@ where
             GlobalAction::ExternalCommand { command, .. } => {
                 if let Some(selected) = self.stack().current().selected() {
                     let selected = selected.clone();
-                    let path = self.stack().path().to_owned();
                     let songs = self.list_songs_in_item(selected);
                     let command = std::sync::Arc::clone(command);
                     ctx.query().id(EXTERNAL_COMMAND).query(move |client| {
@@ -182,7 +231,7 @@ where
             let current = self.stack_mut().current_mut().selected_with_idx().map(|(i, _)| i);
             self.stack_mut().current_mut().scroll_to(perc, ctx.config.scrolloff);
             if current != self.stack().current().selected_with_idx().map(|(i, _)| i) {
-                self.prepare_preview(ctx)?;
+                self.fetch_data_internal(ctx);
             }
             ctx.render()?;
             return Ok(true);
@@ -211,12 +260,13 @@ where
                 if prev_area.contains(position) =>
             {
                 let clicked_row: usize = event.y.saturating_sub(prev_area.y).into();
-                let prev_stack = self.stack_mut().previous_mut();
-                if let Some(idx_to_select) = prev_stack.state.get_at_rendered_row(clicked_row) {
-                    prev_stack.select_idx(idx_to_select, ctx.config.scrolloff);
+                if let Some(prev_stack) = self.stack_mut().previous_mut() {
+                    if let Some(idx_to_select) = prev_stack.state.get_at_rendered_row(clicked_row) {
+                        prev_stack.select_idx(idx_to_select, ctx.config.scrolloff);
+                    }
+                    self.stack_mut().leave();
+                    self.fetch_data_internal(ctx);
                 }
-                self.stack_mut().pop();
-                self.prepare_preview(ctx);
             }
             MouseEventKind::DoubleClick if current_area.contains(position) => {
                 let clicked_row: usize = event.y.saturating_sub(current_area.y).into();
@@ -225,7 +275,7 @@ where
                     self.stack().current().state.get_at_rendered_row(clicked_row)
                 {
                     self.next(ctx)?;
-                    self.prepare_preview(ctx);
+                    self.fetch_data_internal(ctx);
                 }
             }
             MouseEventKind::MiddleClick if current_area.contains(position) => {
@@ -249,7 +299,7 @@ where
                         }
                     }
 
-                    self.prepare_preview(ctx);
+                    self.fetch_data_internal(ctx);
                 }
             }
             MouseEventKind::LeftClick if current_area.contains(position) => {
@@ -259,7 +309,7 @@ where
                     self.stack().current().state.get_at_rendered_row(clicked_row)
                 {
                     self.stack_mut().current_mut().select_idx(idx_to_select, ctx.config.scrolloff);
-                    self.prepare_preview(ctx);
+                    self.fetch_data_internal(ctx);
                 }
             }
             MouseEventKind::LeftClick | MouseEventKind::DoubleClick
@@ -269,22 +319,24 @@ where
                 // Offset does not need to be accounted for since it is always
                 // scrolled all the way to the top when going
                 // deeper
-                let idx_to_select = self.stack().preview().and_then(|preview| {
+                let idx_to_select = self.stack().next_dir_items().and_then(|preview| {
                     if clicked_row < preview.len() { Some(clicked_row) } else { None }
                 });
 
                 self.next(ctx)?;
                 self.stack_mut().current_mut().select_idx(idx_to_select.unwrap_or_default(), 0);
 
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
             }
             MouseEventKind::ScrollUp if current_area.contains(position) => {
                 self.stack_mut().current_mut().scroll_up(1, ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
+                ctx.render()?;
             }
             MouseEventKind::ScrollDown if current_area.contains(position) => {
                 self.stack_mut().current_mut().scroll_down(1, ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
+                ctx.render()?;
             }
             MouseEventKind::RightClick => {
                 let clicked_row: usize = event.y.saturating_sub(current_area.y).into();
@@ -293,7 +345,7 @@ where
                     self.stack().current().state.get_at_rendered_row(clicked_row)
                 {
                     self.stack_mut().current_mut().select_idx(idx_to_select, ctx.config.scrolloff);
-                    self.prepare_preview(ctx);
+                    self.fetch_data_internal(ctx);
                 }
 
                 self.open_context_menu(ctx)?;
@@ -314,12 +366,12 @@ where
         match action.to_owned() {
             CommonAction::Up => {
                 self.stack_mut().current_mut().prev(config.scrolloff, config.wrap_navigation);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Down => {
                 self.stack_mut().current_mut().next(config.scrolloff, config.wrap_navigation);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::MoveUp => {
@@ -330,59 +382,66 @@ where
             }
             CommonAction::DownHalf => {
                 self.stack_mut().current_mut().next_half_viewport(ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::UpHalf => {
                 self.stack_mut().current_mut().prev_half_viewport(ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::PageUp => {
                 self.stack_mut().current_mut().prev_viewport(ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::PageDown => {
                 self.stack_mut().current_mut().next_viewport(ctx.config.scrolloff);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Bottom => {
                 self.stack_mut().current_mut().last();
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Top => {
                 self.stack_mut().current_mut().first();
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Right => {
                 self.next(ctx)?;
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Left => {
-                self.stack_mut().pop();
-                self.stack_mut().clear_preview();
-                self.prepare_preview(ctx);
+                self.stack_mut().leave();
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::EnterSearch => {
                 self.set_filter_input_mode_active(true);
-                self.stack_mut().current_mut().set_filter(Some(String::new()), ctx);
+                self.stack_mut().current_mut().set_filter(
+                    Some(String::new()),
+                    ctx.config.theme.browser_song_format.0.as_slice(),
+                    ctx,
+                );
 
                 ctx.render()?;
             }
             CommonAction::NextResult => {
-                self.stack_mut().current_mut().jump_next_matching(ctx);
-                self.prepare_preview(ctx);
+                self.stack_mut()
+                    .current_mut()
+                    .jump_next_matching(ctx.config.theme.browser_song_format.0.as_slice(), ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::PreviousResult => {
-                self.stack_mut().current_mut().jump_previous_matching(ctx);
-                self.prepare_preview(ctx);
+                self.stack_mut()
+                    .current_mut()
+                    .jump_previous_matching(ctx.config.theme.browser_song_format.0.as_slice(), ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::InvertSelection => {
@@ -395,7 +454,7 @@ where
                 self.stack_mut()
                     .current_mut()
                     .next(ctx.config.scrolloff, ctx.config.wrap_navigation);
-                self.prepare_preview(ctx);
+                self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             CommonAction::Close if !self.stack().current().marked().is_empty() => {
@@ -517,6 +576,58 @@ where
             CommonAction::Rate { kind: _, current: true, min_rating: _, max_rating: _ } => {
                 event.abandon();
             }
+            CommonAction::Save { kind: SaveKind::Playlist { name, all, duplicates_strategy } } => {
+                let list_songs_fns = self
+                    .items(all)
+                    .map(|(_, item)| self.list_songs_in_item(item.to_owned()))
+                    .collect_vec();
+                if list_songs_fns.is_empty() {
+                    status_warn!("No songs selected to save");
+                    return Ok(());
+                }
+
+                let all_songs = ctx.query_sync(move |client| {
+                    Ok(list_songs_fns
+                        .into_iter()
+                        .map(|cb| -> Result<_> { cb(client) })
+                        .collect::<Result<Vec<Vec<_>>>>()?
+                        .into_iter()
+                        .flatten()
+                        .map(|song| song.file)
+                        .collect())
+                })?;
+
+                add_to_playlist_or_show_modal(name, all_songs, duplicates_strategy, ctx);
+            }
+            CommonAction::Save { kind: SaveKind::Modal { all, duplicates_strategy } } => {
+                let list_songs_fns = self
+                    .items(all)
+                    .map(|(_, item)| self.list_songs_in_item(item.to_owned()))
+                    .collect_vec();
+                if list_songs_fns.is_empty() {
+                    status_warn!("No songs selected to save");
+                    return Ok(());
+                }
+
+                let song_paths = ctx.query_sync(|client| {
+                    Ok(list_songs_fns
+                        .into_iter()
+                        .map(|cb| -> Result<_> { cb(client) })
+                        .collect::<Result<Vec<Vec<_>>>>()?
+                        .into_iter()
+                        .flatten()
+                        .map(|song| song.file)
+                        .collect())
+                })?;
+
+                let modal = create_save_modal(
+                    song_paths,
+                    self.initial_playlist_name(all),
+                    duplicates_strategy,
+                    ctx,
+                )?;
+                modal!(ctx, modal);
+            }
         }
 
         Ok(())
@@ -590,7 +701,7 @@ where
                 }
 
                 let songs_in_items_clone = list_songs_in_items.clone();
-                let initial_playlist_name = self.initial_playlist_name();
+                let initial_playlist_name = self.initial_playlist_name(false);
                 section.add_item("Create playlist", move |ctx| {
                     modal!(
                         ctx,

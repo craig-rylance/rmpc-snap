@@ -1,23 +1,30 @@
+use std::{borrow::Cow, collections::HashSet};
+
 use anyhow::Result;
 use input_section::InputSection;
+use itertools::Itertools;
 use list_section::ListSection;
 use modal::MenuModal;
 use multi_action_section::MultiActionSection;
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
-    widgets::Widget,
 };
 
 use crate::{
-    config::keys::actions::AddOpts,
+    config::keys::actions::{AddOpts, DuplicateStrategy},
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
+    mpd::mpd_client::MpdClient,
     shared::{
+        cmp::StringCompare,
         key_event::KeyEvent,
-        macros::status_error,
+        macros::{modal, status_error},
         mpd_client_ext::{Enqueue, MpdClientExt as _},
     },
-    ui::modals::menu::select_section::SelectSection,
+    ui::modals::{
+        confirm_modal::{Action, ConfirmModal},
+        menu::select_section::SelectSection,
+    },
 };
 
 mod input_section;
@@ -35,6 +42,8 @@ trait Section {
     fn left(&mut self) -> bool {
         true
     }
+    fn selected(&self) -> Option<usize>;
+    fn select(&mut self, idx: usize);
     fn unselect(&mut self);
     fn unfocus(&mut self) {}
 
@@ -44,10 +53,13 @@ trait Section {
     }
 
     fn len(&self) -> usize;
-    fn render(&mut self, area: Rect, buf: &mut Buffer);
+    fn preferred_height(&self) -> u16;
+    fn render(&mut self, area: Rect, buf: &mut Buffer, filter: Option<&str>, ctx: &Ctx);
 
     fn left_click(&mut self, pos: ratatui::layout::Position);
     fn double_click(&mut self, pos: ratatui::layout::Position, ctx: &Ctx) -> Result<bool>;
+
+    fn item_labels_iter(&self) -> Box<dyn Iterator<Item = &str> + '_>;
 }
 
 #[derive(Debug)]
@@ -95,6 +107,24 @@ impl Section for SectionType<'_> {
         }
     }
 
+    fn selected(&self) -> Option<usize> {
+        match self {
+            SectionType::Menu(s) => s.selected(),
+            SectionType::Multi(s) => s.selected(),
+            SectionType::Input(s) => s.selected(),
+            SectionType::Select(s) => s.selected(),
+        }
+    }
+
+    fn select(&mut self, idx: usize) {
+        match self {
+            SectionType::Menu(s) => s.select(idx),
+            SectionType::Multi(s) => s.select(idx),
+            SectionType::Input(s) => s.select(idx),
+            SectionType::Select(s) => s.select(idx),
+        }
+    }
+
     fn unselect(&mut self) {
         match self {
             SectionType::Menu(s) => s.unselect(),
@@ -131,12 +161,21 @@ impl Section for SectionType<'_> {
         }
     }
 
-    fn render(&mut self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn preferred_height(&self) -> u16 {
         match self {
-            SectionType::Menu(s) => Widget::render(s, area, buf),
-            SectionType::Multi(s) => Widget::render(s, area, buf),
-            SectionType::Input(s) => Widget::render(s, area, buf),
-            SectionType::Select(s) => Widget::render(s, area, buf),
+            SectionType::Menu(s) => s.preferred_height(),
+            SectionType::Multi(s) => s.preferred_height(),
+            SectionType::Input(s) => s.preferred_height(),
+            SectionType::Select(s) => s.preferred_height(),
+        }
+    }
+
+    fn render(&mut self, area: Rect, buf: &mut Buffer, filter: Option<&str>, ctx: &Ctx) {
+        match self {
+            SectionType::Menu(s) => s.render(area, buf, filter, ctx),
+            SectionType::Multi(s) => s.render(area, buf, filter, ctx),
+            SectionType::Input(s) => s.render(area, buf, filter, ctx),
+            SectionType::Select(s) => s.render(area, buf, filter, ctx),
         }
     }
 
@@ -164,6 +203,15 @@ impl Section for SectionType<'_> {
             SectionType::Multi(s) => s.double_click(pos, ctx),
             SectionType::Input(s) => s.double_click(pos, ctx),
             SectionType::Select(s) => s.double_click(pos, ctx),
+        }
+    }
+
+    fn item_labels_iter(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match self {
+            SectionType::Menu(s) => s.item_labels_iter(),
+            SectionType::Multi(s) => s.item_labels_iter(),
+            SectionType::Input(s) => s.item_labels_iter(),
+            SectionType::Select(s) => s.item_labels_iter(),
         }
     }
 }
@@ -316,5 +364,164 @@ pub fn create_add_modal<'a>(
             Some(section)
         })
         .list_section(ctx, |section| Some(section.item("Cancel", |_ctx| Ok(()))))
+        .build()
+}
+
+pub fn create_save_modal<'a>(
+    song_paths: Vec<String>,
+    initial_playlist_name: Option<String>,
+    duplicate_strategy: DuplicateStrategy,
+    ctx: &Ctx,
+) -> Result<MenuModal<'a>> {
+    let playlists =
+        ctx.query_sync(|client| Ok(client.list_playlists()?))?.into_iter().sorted_by(|a, b| {
+            StringCompare::builder().fold_case(true).build().compare(&a.name, &b.name)
+        });
+
+    Ok(MenuModal::new(ctx)
+        .width(80)
+        .input_section(ctx, "New playlist", |mut sect| {
+            sect.add_initial_value(initial_playlist_name.unwrap_or_default());
+            let song_paths = song_paths.clone();
+            sect.add_action(|ctx, value| {
+                if !value.is_empty() {
+                    ctx.command(move |client| {
+                        client.create_playlist(&value, song_paths)?;
+                        Ok(())
+                    });
+                }
+            });
+            Some(sect)
+        })
+        .select_section(ctx, move |mut sect| {
+            sect.action(move |ctx, playlist_name| {
+                add_to_playlist_or_show_modal(playlist_name, song_paths, duplicate_strategy, ctx);
+                Ok(())
+            });
+            for mut playlist in playlists {
+                let playlist_name = std::mem::take(&mut playlist.name);
+                sect.add_item(playlist_name.clone(), playlist_name);
+                sect.add_max_height(12);
+            }
+            Some(sect)
+        })
+        .list_section(ctx, |mut section| {
+            section.add_item("Cancel", |_ctx| Ok(()));
+            Some(section)
+        })
+        .build())
+}
+
+pub fn add_to_playlist_or_show_modal(
+    playlist_name: String,
+    all_songs: Vec<String>,
+    duplicate_strategy: DuplicateStrategy,
+    ctx: &Ctx,
+) {
+    let pl_name = playlist_name.clone();
+    let songs_in_playlist = match ctx.query_sync(move |client| {
+        let pl: HashSet<_> =
+            client.list_playlist_info(&pl_name, None)?.into_iter().map(|s| s.file).collect();
+        Ok(pl)
+    }) {
+        Ok(v) => v,
+        Err(err) => {
+            status_error!("Failed to fetch playlist info: {err}");
+            return;
+        }
+    };
+
+    let (duplicate_songs, non_duplicate_songs): (Vec<_>, Vec<_>) =
+        all_songs.iter().cloned().partition(|s| songs_in_playlist.contains(s));
+
+    match duplicate_strategy {
+        DuplicateStrategy::None if !duplicate_songs.is_empty() => {}
+        DuplicateStrategy::NonDuplicate if !duplicate_songs.is_empty() => {
+            // add only non duplicate songs
+            ctx.command(move |client| {
+                client.add_to_playlist_multiple(&playlist_name, non_duplicate_songs)?;
+                Ok(())
+            });
+        }
+        DuplicateStrategy::Ask if !duplicate_songs.is_empty() => {
+            // show modal window
+            let modal = create_duplicate_songs_modal(
+                playlist_name,
+                all_songs,
+                &duplicate_songs,
+                non_duplicate_songs,
+                ctx,
+            );
+            modal!(ctx, modal);
+        }
+        DuplicateStrategy::All
+        | DuplicateStrategy::None
+        | DuplicateStrategy::NonDuplicate
+        | DuplicateStrategy::Ask => {
+            // add all songs
+            ctx.command(move |client| {
+                client.add_to_playlist_multiple(&playlist_name, all_songs)?;
+                Ok(())
+            });
+        }
+    }
+}
+
+fn create_duplicate_songs_modal<'a>(
+    playlist_name: String,
+    all_songs: Vec<String>,
+    duplicate_songs: &[String],
+    non_duplicate_songs: Vec<String>,
+    ctx: &Ctx,
+) -> ConfirmModal<'a> {
+    let max = 5;
+    let mut message: Vec<Cow<_>> = vec![
+        format!("You are trying to add songs that are already in the playlist '{playlist_name}':")
+            .into(),
+        "\n".into(),
+    ];
+
+    for d in duplicate_songs.iter().take(max) {
+        message.push(format!("  - {d}").into());
+    }
+
+    if duplicate_songs.len() > max {
+        let count = duplicate_songs.len() - max;
+        if count == 1 {
+            message.push("  ... and 1 other".into());
+        } else {
+            message.push(format!("  ... and {count} others").into());
+        }
+    }
+
+    let playlist_name2 = playlist_name.clone();
+    ConfirmModal::builder()
+        .ctx(ctx)
+        .message(message)
+        .action(Action::CustomButtons {
+            buttons: vec![
+                (
+                    "Add anyway",
+                    Box::new(|ctx| {
+                        ctx.command(move |client| {
+                            client.add_to_playlist_multiple(&playlist_name2, all_songs)?;
+                            Ok(())
+                        });
+                        Ok(())
+                    }),
+                ),
+                (
+                    "Add non duplicates",
+                    Box::new(|ctx| {
+                        ctx.command(move |client| {
+                            client.add_to_playlist_multiple(&playlist_name, non_duplicate_songs)?;
+                            Ok(())
+                        });
+                        Ok(())
+                    }),
+                ),
+                ("Cancel", Box::new(|_ctx| Ok(()))),
+            ],
+        })
         .build()
 }

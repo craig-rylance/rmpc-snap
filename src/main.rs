@@ -1,8 +1,9 @@
 use core::{config_watcher::ERROR_CONFIG_MODAL_ID, scheduler::Scheduler};
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -22,7 +23,7 @@ use crate::{
         ConfigFile,
         cli::{Args, Command},
     },
-    mpd::client::Client,
+    mpd::{client::Client, mpd_client::MpdClient, proto_client::SocketClient},
     shared::{
         dependencies::{DEPENDENCIES, FFMPEG, FFPROBE, PYTHON3, PYTHON3MUTAGEN, UEBERZUGPP, YTDLP},
         env::ENV,
@@ -102,6 +103,42 @@ fn main() -> Result<()> {
             file.read_to_string(&mut theme)?;
             println!("{theme}");
         }
+        Some(Command::Raw { command }) => {
+            let config_file = ConfigFile::read(&config_path)
+                .context("Failed to read config file")
+                .unwrap_or_default();
+            let config = config_file.clone().into_config(
+                Some(&config_path),
+                args.theme.as_deref(),
+                std::mem::take(&mut args.address),
+                std::mem::take(&mut args.password),
+                false,
+            )?;
+
+            let mut client = Client::init(
+                config.address.clone(),
+                config.password.clone(),
+                "debug",
+                None,
+                false,
+            )?;
+
+            client.set_read_timeout(Some(Duration::from_secs(3)))?;
+            client.set_write_timeout(Some(Duration::from_secs(3)))?;
+            client.stream.write_all(command.as_bytes())?;
+            client.stream.write_all(b"\n")?;
+            client.stream.flush()?;
+
+            let mut buf = String::new();
+            loop {
+                client.read().read_line(&mut buf)?;
+                print!("{buf}");
+                if buf.trim().starts_with("OK") || buf.trim().starts_with("ACK") {
+                    break;
+                }
+                buf.clear();
+            }
+        }
         Some(Command::DebugInfo) => {
             let config_file = ConfigFile::read(&config_path)
                 .context("Failed to read config file")
@@ -144,6 +181,15 @@ fn main() -> Result<()> {
                 }
             };
 
+            let mpd_info =
+                Client::init(config.address.clone(), config.password.clone(), "debug", None, false)
+                    .and_then(|mut client| -> Result<_, _> {
+                        let version = client.version();
+                        let commands = client.commands().map(|c| c.0)?;
+                        let not_commands = client.not_commands().map(|c| c.0)?;
+                        Ok((version, commands, not_commands))
+                    });
+
             println!(
                 "rmpc {}{}",
                 env!("CARGO_PKG_VERSION"),
@@ -160,6 +206,17 @@ fn main() -> Result<()> {
             println!("{:<20} {:?}", "Resolved Address", config.address);
             println!("{:<20} {mpd_host}", "MPD_HOST");
             println!("{:<20} {mpd_port}", "MPD_PORT");
+            match mpd_info {
+                Ok((version, commands, not_commands)) => {
+                    println!("{:<20} Success", "Connection");
+                    println!("{:<20} {version}", "Version");
+                    println!("{:<20} {commands:?}", "Supported commands");
+                    println!("{:<20} {not_commands:?}", "Unsupported commands");
+                }
+                Err(err) => {
+                    println!("{:<20} Error {err:?}", "Connection");
+                }
+            }
 
             println!("\nYoutube playback:");
             println!("{:<20} {:?}", "Cache dir", config.cache_dir);
@@ -261,6 +318,7 @@ fn main() -> Result<()> {
                     )?
                 }
                 Err(err) => {
+                    eprintln!("{err}");
                     try_skip!(
                         event_tx.send(AppEvent::InfoModal {
                             message: vec![err.to_string()],

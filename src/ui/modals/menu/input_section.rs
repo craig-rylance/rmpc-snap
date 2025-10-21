@@ -37,8 +37,21 @@ impl<'a> InputSection<'a> {
         }
     }
 
+    pub fn add_action(
+        &mut self,
+        action: impl FnOnce(&Ctx, String) + Send + Sync + 'static,
+    ) -> &mut Self {
+        self.action = Some(Box::new(action));
+        self
+    }
+
     pub fn action(mut self, action: impl FnOnce(&Ctx, String) + Send + Sync + 'static) -> Self {
         self.action = Some(Box::new(action));
+        self
+    }
+
+    pub fn add_initial_value(&mut self, value: impl Into<String>) -> &mut Self {
+        self.value = value.into();
         self
     }
 }
@@ -54,6 +67,14 @@ impl Section for InputSection<'_> {
         self.is_current
     }
 
+    fn selected(&self) -> Option<usize> {
+        if self.is_current { Some(0) } else { None }
+    }
+
+    fn select(&mut self, idx: usize) {
+        self.is_current = idx == 0;
+    }
+
     fn unfocus(&mut self) {
         self.is_focused = false;
     }
@@ -63,7 +84,7 @@ impl Section for InputSection<'_> {
         self.is_current = false;
     }
 
-    fn confirm(&mut self, ctx: &crate::ctx::Ctx) -> Result<bool> {
+    fn confirm(&mut self, ctx: &Ctx) -> Result<bool> {
         if self.is_focused {
             if let Some(cb) = self.action.take() {
                 (cb)(ctx, std::mem::take(&mut self.value));
@@ -79,8 +100,35 @@ impl Section for InputSection<'_> {
         1
     }
 
-    fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        Widget::render(self, area, buf);
+    fn preferred_height(&self) -> u16 {
+        1
+    }
+
+    fn render(&mut self, area: Rect, buf: &mut Buffer, filter: Option<&str>, ctx: &Ctx) {
+        self.area = area;
+
+        let input = Input::default()
+            .set_label_style(if self.is_current {
+                self.current_item_style
+            } else {
+                Style::default()
+            })
+            .spacing(1)
+            .set_borderless(true)
+            .set_label(self.label.as_ref())
+            .set_label_style(if self.is_current && !self.is_focused {
+                ctx.config.theme.current_item_style
+            } else if let Some(f) = filter
+                && self.label.to_lowercase().contains(f)
+            {
+                ctx.config.theme.highlighted_item_style
+            } else {
+                Style::default()
+            })
+            .set_focused(self.is_focused)
+            .set_text(&self.value);
+
+        input.render(area, buf);
     }
 
     fn left_click(&mut self, pos: Position) {
@@ -119,24 +167,8 @@ impl Section for InputSection<'_> {
 
         Ok(())
     }
-}
 
-impl Widget for &mut InputSection<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.area = area;
-
-        let input = Input::default()
-            .set_label_style(if self.is_current {
-                self.current_item_style
-            } else {
-                Style::default()
-            })
-            .spacing(1)
-            .set_borderless(true)
-            .set_label(self.label.as_ref())
-            .set_focused(self.is_focused)
-            .set_text(&self.value);
-
-        input.render(area, buf);
+    fn item_labels_iter(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(std::iter::once(self.label.as_ref()))
     }
 }

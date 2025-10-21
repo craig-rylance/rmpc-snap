@@ -26,7 +26,7 @@ use crate::{
     MpdQueryResult,
     config::{
         Config,
-        cli::Args,
+        cli::{Args, Command},
         keys::{CommonAction, GlobalAction, actions::RateKind},
         tabs::{PaneType, SizedPaneOrSplit, TabName},
         theme::level_styles::LevelStyles,
@@ -50,6 +50,7 @@ use crate::{
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::MouseEvent,
         mpd_client_ext::{Enqueue, MpdClientExt},
+        ytdlp::YtDlpHostKind,
     },
     ui::modals::menu::create_rating_modal,
 };
@@ -310,22 +311,51 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::CommandMode => {
                     modal!(
                         ctx,
-                        InputModal::new(ctx)
-                            .title("Execute a command")
-                            .confirm_label("Execute")
-                            .on_confirm(|ctx, value| {
-                                match Args::parse_cli_line(value) {
-                                    Ok(Args { command: Some(cmd), .. }) => {
-                                        if ctx.work_sender.send(WorkRequest::Command(cmd)).is_err()
-                                        {
-                                            log::error!("Failed to send command");
-                                        }
+                        InputModal::new(ctx).title("Execute a command").on_confirm(|ctx, value| {
+                            match Args::parse_cli_line(value) {
+                                Ok(Args {
+                                    command:
+                                        Some(Command::SearchYt {
+                                            query,
+                                            provider,
+                                            interactive,
+                                            limit,
+                                            position,
+                                        }),
+                                    ..
+                                }) => {
+                                    let kind: YtDlpHostKind = provider.into();
+
+                                    if let Err(e) = ctx.work_sender.send(WorkRequest::SearchYt {
+                                        query,
+                                        kind,
+                                        limit,
+                                        interactive,
+                                        position,
+                                    }) {
+                                        log::error!("Failed to send SearchYt work: {e}");
                                     }
-                                    Ok(_) => log::warn!("No subcommand provided"),
-                                    Err(e) => log::error!("Parse error: {e}"),
+                                    Ok(())
                                 }
-                                Ok(())
-                            })
+
+                                Ok(Args { command: Some(cmd), .. }) => {
+                                    if ctx.work_sender.send(WorkRequest::Command(cmd)).is_err() {
+                                        log::error!("Failed to send command");
+                                    }
+                                    Ok(())
+                                }
+
+                                Ok(_) => {
+                                    log::warn!("No subcommand provided");
+                                    Ok(())
+                                }
+
+                                Err(e) => {
+                                    log::error!("Parse error: {e}");
+                                    Ok(())
+                                }
+                            }
+                        })
                     );
                 }
                 GlobalAction::NextTrack if ctx.status.state != State::Stop => {
@@ -456,6 +486,14 @@ impl<'ui> Ui<'ui> {
                         Ok(())
                     });
                 }
+                GlobalAction::SeekToStart
+                    if matches!(ctx.status.state, State::Play | State::Pause) =>
+                {
+                    ctx.command(move |client| {
+                        client.seek_current(ValueChange::Set(0))?;
+                        Ok(())
+                    });
+                }
                 GlobalAction::Update => {
                     ctx.command(move |client| {
                         client.update(None)?;
@@ -492,6 +530,7 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::Stop => {}
                 GlobalAction::SeekBack => {}
                 GlobalAction::SeekForward => {}
+                GlobalAction::SeekToStart => {}
                 GlobalAction::ExternalCommand { command, .. } => {
                     run_external(command.clone(), create_env(ctx, std::iter::empty::<&str>()));
                 }
@@ -848,6 +887,7 @@ pub enum UiAppEvent {
 #[allow(dead_code)]
 pub enum UiEvent {
     Player,
+    QueueChanged,
     Database,
     Output,
     StoredPlaylist,
