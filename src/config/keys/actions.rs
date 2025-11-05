@@ -39,6 +39,8 @@ pub enum GlobalAction {
     TogglePause,
     VolumeUp,
     VolumeDown,
+    CrossfadeUp,
+    CrossfadeDown,
     SeekForward,
     SeekBack,
     SeekToStart,
@@ -84,6 +86,8 @@ pub enum GlobalActionFile {
     TogglePause,
     VolumeUp,
     VolumeDown,
+    CrossfadeUp,
+    CrossfadeDown,
     SeekForward,
     SeekBack,
     SeekToStart,
@@ -136,6 +140,8 @@ impl From<GlobalActionFile> for GlobalAction {
             GlobalActionFile::Rescan => GlobalAction::Rescan,
             GlobalActionFile::VolumeDown => GlobalAction::VolumeDown,
             GlobalActionFile::VolumeUp => GlobalAction::VolumeUp,
+            GlobalActionFile::CrossfadeDown => GlobalAction::CrossfadeDown,
+            GlobalActionFile::CrossfadeUp => GlobalAction::CrossfadeUp,
             GlobalActionFile::PreviousTab => GlobalAction::PreviousTab,
             GlobalActionFile::NextTab => GlobalAction::NextTab,
             GlobalActionFile::ToggleConsume => GlobalAction::ToggleConsume,
@@ -183,6 +189,8 @@ impl ToDescription for GlobalAction {
             GlobalAction::Stop => "Stop playback".into(),
             GlobalAction::VolumeUp => "Raise volume".into(),
             GlobalAction::VolumeDown => "Lower volume".into(),
+            GlobalAction::CrossfadeUp => "Increase crossfade duration".into(),
+            GlobalAction::CrossfadeDown => "Decrease crossfade duration".into(),
             GlobalAction::NextTrack => "Play next track in the queue".into(),
             GlobalAction::PreviousTrack => "Play previous track in the queue".into(),
             GlobalAction::SeekForward => "Seek currently playing track forwards".into(),
@@ -553,9 +561,32 @@ pub enum SaveKind {
     },
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+pub enum DeleteKind {
+    Modal {
+        #[serde(default = "crate::config::defaults::bool::<false>")]
+        all: bool,
+        #[serde(default = "crate::config::defaults::bool::<true>")]
+        confirmation: bool,
+    },
+    Playlist {
+        name: String,
+        #[serde(default = "crate::config::defaults::bool::<false>")]
+        all: bool,
+        #[serde(default = "crate::config::defaults::bool::<true>")]
+        confirmation: bool,
+    },
+}
+
 impl Default for SaveKind {
     fn default() -> Self {
         SaveKind::Modal { all: false, duplicates_strategy: DuplicateStrategy::default() }
+    }
+}
+
+impl Default for DeleteKind {
+    fn default() -> Self {
+        DeleteKind::Modal { all: false, confirmation: true }
     }
 }
 
@@ -615,6 +646,10 @@ pub enum CommonActionFile {
         #[serde(default)]
         kind: SaveKind,
     },
+    DeleteFromPlaylist {
+        #[serde(default)]
+        kind: DeleteKind,
+    },
 }
 
 #[derive(Debug, Display, Clone, EnumDiscriminants, PartialEq)]
@@ -660,6 +695,9 @@ pub enum CommonAction {
     },
     Save {
         kind: SaveKind,
+    },
+    DeleteFromPlaylist {
+        kind: DeleteKind,
     },
 }
 
@@ -799,6 +837,40 @@ impl ToDescription for CommonAction {
 
                 buf.into()
             }
+            CommonAction::DeleteFromPlaylist { kind: DeleteKind::Modal { all, confirmation } } => {
+                let mut buf = String::from("Open a modal popup to delete ");
+                if *all {
+                    buf.push_str("all items");
+                } else {
+                    buf.push_str("the item under cursor");
+                }
+                if *confirmation {
+                    buf.push_str(" with a confirmation");
+                } else {
+                    buf.push_str(" without confirmation");
+                }
+                buf.push_str(" from the selected playlist.");
+
+                buf.into()
+            }
+            CommonAction::DeleteFromPlaylist { kind: DeleteKind::Playlist { name ,all, confirmation } } => {
+                let mut buf = String::from("Delete ");
+                if *all {
+                    buf.push_str("all items");
+                } else {
+                    buf.push_str("the item under cursor");
+                }
+
+                write!(buf, " from playlist '{name}'. ").expect("Write to string buf should never fail.");
+
+                if *confirmation {
+                    buf.push_str("With a confirmation.");
+                } else {
+                    buf.push_str("Without confirmation.");
+                }
+
+                buf.into()
+            }
         }
     }
 }
@@ -911,6 +983,9 @@ impl TryFrom<CommonActionFile> for CommonAction {
                 CommonAction::Rate { kind, current, min_rating, max_rating }
             }
             CommonActionFile::Save { kind } => CommonAction::Save { kind },
+            CommonActionFile::DeleteFromPlaylist { kind } => {
+                CommonAction::DeleteFromPlaylist { kind }
+            }
         })
     }
 }

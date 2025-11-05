@@ -42,6 +42,10 @@ Search pane
 - `search_button` config option for search pane
 - Configurable `Save()` keybind in the navigation section
 - Added `SeekToStart` global action to seek to the beginning of the currently playing track
+- `DeleteFromPlaylist` action to delete songs in browsers panes from selected playlist
+- Added `CrossfadeUp` and `CrossfadeDown` global actions
+- `listall` command to cli
+- `use_track_when_empty` to progress bar, renders track symbol instead of start/end when they are empty
 
 ### Changed
 
@@ -69,6 +73,7 @@ remote commands inside scripts triggered by rmpc
 - Refactored and improved image backend detection
 - `JumpToCurrent` now jumps to last playing song in stopped state
 - Directories now keep their state when going back out of them
+- Nord theme update
 
 ### Fixed
 
@@ -88,6 +93,8 @@ available and Block if not
 - Fix playlists not using playlist style and icon in the Playlists pane
 - Order of added songs when adding them from browser panes
 - Marked items in Queue not being cleared on database update
+- Improved behavior if rmpc happens to panic at certain time
+- Group not falling back to its default value
 
 ### Deprecated
 

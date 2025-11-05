@@ -36,7 +36,10 @@ use super::{
     proto_client::{ProtoClient, SocketClient},
     version::Version,
 };
-use crate::shared::{ext::error::ErrorExt, macros::status_error};
+use crate::{
+    mpd::commands::list_all::ListAll,
+    shared::{ext::error::ErrorExt, macros::status_error},
+};
 
 type MpdResult<T> = Result<T, MpdError>;
 
@@ -99,6 +102,7 @@ pub trait MpdCommand {
     fn send_get_volume(&mut self) -> MpdResult<()>;
     fn send_set_volume(&mut self, volume: Volume) -> MpdResult<()>;
     fn send_volume(&mut self, change: ValueChange) -> MpdResult<()>;
+    fn send_crossfade(&mut self, seconds: u32) -> MpdResult<()>;
     fn send_get_current_song(&mut self) -> MpdResult<()>;
     fn send_get_status(&mut self) -> MpdResult<()>;
     fn send_pause_toggle(&mut self) -> MpdResult<()>;
@@ -225,6 +229,7 @@ pub trait MpdClient: Sized {
     fn set_volume(&mut self, volume: Volume) -> MpdResult<()>;
     /// Set playback volume relative to current
     fn volume(&mut self, change: ValueChange) -> MpdResult<()>;
+    fn crossfade(&mut self, seconds: u32) -> MpdResult<()>;
     fn get_current_song(&mut self) -> MpdResult<Option<Song>>;
     fn get_status(&mut self) -> MpdResult<Status>;
     // Playback control
@@ -271,7 +276,7 @@ pub trait MpdClient: Sized {
     fn add_random_songs(&mut self, count: usize, filter: Option<&[Filter<'_>]>) -> MpdResult<()>;
     fn add_random_tag(&mut self, count: usize, tag: Tag) -> MpdResult<()>;
     /// Do not use this unless absolutely necessary
-    fn list_all(&mut self, path: Option<&str>) -> MpdResult<LsInfo>;
+    fn list_all(&mut self, path: Option<&str>) -> MpdResult<ListAll>;
     fn lsinfo(&mut self, path: Option<&str>) -> MpdResult<LsInfo>;
     fn list_files(&mut self, path: Option<&str>) -> MpdResult<ListFiles>;
     fn read_picture(&mut self, path: &str) -> MpdResult<Option<Vec<u8>>>;
@@ -426,6 +431,10 @@ impl MpdClient for Client<'_> {
 
     fn volume(&mut self, change: ValueChange) -> MpdResult<()> {
         self.send_volume(change).and_then(|()| self.read_ok())
+    }
+
+    fn crossfade(&mut self, seconds: u32) -> MpdResult<()> {
+        self.send_crossfade(seconds).and_then(|()| self.read_ok())
     }
 
     fn get_current_song(&mut self) -> MpdResult<Option<Song>> {
@@ -637,7 +646,7 @@ impl MpdClient for Client<'_> {
         self.send_execute_cmd_list().and_then(|()| self.read_ok())
     }
 
-    fn list_all(&mut self, path: Option<&str>) -> MpdResult<LsInfo> {
+    fn list_all(&mut self, path: Option<&str>) -> MpdResult<ListAll> {
         self.send_list_all(path).and_then(|()| self.read_response())
     }
 
@@ -971,6 +980,10 @@ impl<T: SocketClient> MpdCommand for T {
             }
             ValueChange::Set(val) => self.execute(&format!("setvol {val}")),
         }
+    }
+
+    fn send_crossfade(&mut self, seconds: u32) -> MpdResult<()> {
+        self.execute(&format!("crossfade {seconds}"))
     }
 
     fn send_get_current_song(&mut self) -> MpdResult<()> {
