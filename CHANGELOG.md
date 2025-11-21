@@ -6,6 +6,26 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `AfterCurrentAlbum` and `BeforeCurrentAlbum` to `AddOptions` keybind
+- `order` option to `album_art`, sets whether to check embedded image or cover image file first
+
+### Changed
+
+- Moved docs to a new [repository](https://github.com/rmpc-org/rmpc-org.github.io) and [domain](https://rmpc.mierak.dev/)
+- Rmpc now checks for embedded image first and cover image in a file second by default, this can be
+configured with the new `album_art.order` option
+
+### Fixed
+
+- Ignore rare phantom inputs from querying terminal for protocol support on startup
+- Fix directories pane not fetching data after using the `Confirm` action to enter a directory
+- Album art (sixel and iterm2) sometimes being aligned to an incorrect pane when in tmux splits
+- Album art (sixel and iterm2) not rendering after detaching and reattaching from tmux session
+
+## [0.10.0] - 2025-11-11
+
+### Added
+
 - Added --interactive: interactive picker (TUI list / CLI prompt) with --limit N for `searchyt`.
 - Added youtube song by name support: `searchyt "query"` (uses first YouTube result; TUI supported).
 - Added interactive scrollbar support to browser panes and search pane results:
@@ -95,6 +115,7 @@ available and Block if not
 - Marked items in Queue not being cleared on database update
 - Improved behavior if rmpc happens to panic at certain time
 - Group not falling back to its default value
+- Panic when only one tab is defined in the config
 
 ### Deprecated
 
@@ -448,7 +469,8 @@ section instead
 
 ## [0.1.0] - 2024-06-21
 
-[unreleased]: https://github.com/mierak/rmpc/compare/v0.9.0...HEAD
+[unreleased]: https://github.com/mierak/rmpc/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/mierak/rmpc/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mierak/rmpc/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mierak/rmpc/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mierak/rmpc/compare/v0.6.0...v0.7.0
