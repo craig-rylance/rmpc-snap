@@ -2,7 +2,7 @@ use std::{io::Write, sync::Arc};
 
 use anyhow::Result;
 use crossbeam::channel::Sender;
-use ratatui::layout::Rect;
+use ratatui::{layout::Rect, prelude::IntoCrossterm};
 
 use super::{
     Backend,
@@ -184,7 +184,7 @@ impl AlbumArtFacade {
         let w = TERMINAL.writer();
         let mut w = w.lock();
         let w = w.by_ref();
-        let c = ctx.config.theme.background_color.map(Into::into);
+        let c = ctx.config.theme.background_color.map(|c| c.into_crossterm());
 
         let result = match (&mut self.image_backend, data) {
             (ImageBackend::Kitty(kitty), EncodeData::Kitty(data)) => {
@@ -226,8 +226,9 @@ impl AlbumArtFacade {
         let w = TERMINAL.writer();
         let mut w = w.lock();
         let w = w.by_ref();
-        let c = ctx.config.theme.background_color.map(Into::into);
+        let c = ctx.config.theme.background_color.map(|c| c.into_crossterm());
 
+        self.request_queue.clear();
         match &mut self.image_backend {
             ImageBackend::Kitty(s) => s.hide(w, self.last_size, c)?,
             ImageBackend::Ueberzug(s) => s.hide(w, self.last_size, c)?,

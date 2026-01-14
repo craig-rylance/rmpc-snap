@@ -11,9 +11,10 @@ use crate::{
     shared::{
         ext::{rect::RectExt, vec::VecExt},
         id::Id,
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
+    ui::input::InputResultEvent,
 };
 
 #[derive(Debug)]
@@ -92,14 +93,34 @@ impl TabScreen {
                 frame.render_widget(block.border_style(ctx.config.as_border_style()), block_area);
                 Ok(())
             },
+            ctx,
         )?;
+        Ok(())
+    }
+
+    pub(in crate::ui) fn handle_insert_mode(
+        &mut self,
+        panes: &mut PaneContainer,
+        kind: InputResultEvent,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
+        let Some(focused) = self.panes.panes_iter().find(|pane| pane.id == self.focused) else {
+            log::error!(
+                "Unable to find focused pane, this should not happen. Please report this issue."
+            );
+            return Ok(());
+        };
+
+        let mut pane = panes.get_mut(&focused.pane, ctx)?;
+        pane_call!(pane, handle_insert_mode(kind, ctx))?;
+
         Ok(())
     }
 
     pub(in crate::ui) fn handle_action(
         &mut self,
         panes: &mut PaneContainer,
-        event: &mut KeyEvent,
+        event: &mut ActionEvent,
         ctx: &mut Ctx,
     ) -> Result<()> {
         let Some(focused_pane_data) = self.pane_data.get(&self.focused) else {
@@ -108,7 +129,7 @@ impl TabScreen {
         };
         let focused_area = focused_pane_data.area;
 
-        match event.as_common_action(ctx) {
+        match event.claim_common() {
             Some(CommonAction::PaneUp) => {
                 let pane_to_focus = self
                     .panes_directly_above(focused_area)
@@ -188,29 +209,31 @@ impl TabScreen {
         event: MouseEvent,
         ctx: &Ctx,
     ) -> Result<()> {
-        if matches!(event.kind, MouseEventKind::LeftClick) {
-            let Some(pane) = self
+        let pane_id = {
+            let Some((pane_id, data)) = self
                 .pane_data
                 .iter()
                 .find(|(_, PaneData { area, .. })| area.contains(event.into()))
-                .and_then(|(pane_id, _)| {
-                    self.panes.panes_iter().find(|pane| &pane.id == pane_id && pane.is_focusable())
-                })
             else {
                 return Ok(());
             };
-            self.set_focused(pane.id);
-            ctx.render()?;
-        }
 
-        let Some(focused) = self.panes.panes_iter().find(|pane| pane.id == self.focused) else {
-            log::error!(
-                "Unable to find focused pane, this should not happen. Please report this issue."
-            );
+            let id = *pane_id;
+
+            if matches!(event.kind, MouseEventKind::LeftClick) && data.focusable {
+                self.set_focused(id);
+            }
+
+            id
+        };
+
+        let Some(pane) = self.panes.panes_iter().find(|pane| pane.id == pane_id) else {
             return Ok(());
         };
-        let mut pane = panes.get_mut(&focused.pane, ctx)?;
+
+        let mut pane = panes.get_mut(&pane.pane, ctx)?;
         pane_call!(pane, handle_mouse_event(event, ctx))?;
+
         Ok(())
     }
 
@@ -228,16 +251,22 @@ impl TabScreen {
         area: Rect,
         ctx: &Ctx,
     ) -> Result<()> {
-        self.panes.for_each_pane(area, &mut |pane, pane_area, _, block_area| {
-            let pane_data =
-                self.pane_data.entry(pane.id).or_insert_with(|| PaneData::new(pane.is_focusable()));
-            pane_data.area = pane_area;
-            pane_data.block_area = block_area;
-            let mut pane_instance = pane_container.get_mut(&pane.pane, ctx)?;
-            pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
-            pane_call!(pane_instance, before_show(ctx))?;
-            Ok(())
-        })?;
+        self.panes.for_each_pane(
+            area,
+            &mut |pane, pane_area, _, block_area| {
+                let pane_data = self
+                    .pane_data
+                    .entry(pane.id)
+                    .or_insert_with(|| PaneData::new(pane.is_focusable()));
+                pane_data.area = pane_area;
+                pane_data.block_area = block_area;
+                let mut pane_instance = pane_container.get_mut(&pane.pane, ctx)?;
+                pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
+                pane_call!(pane_instance, before_show(ctx))?;
+                Ok(())
+            },
+            ctx,
+        )?;
         if !self.initialized {
             let pane_to_focus = self
                 .pane_data
@@ -264,16 +293,22 @@ impl TabScreen {
         area: Rect,
         ctx: &Ctx,
     ) -> Result<()> {
-        self.panes.for_each_pane(area, &mut |pane, pane_area, _, block_area| {
-            let pane_data =
-                self.pane_data.entry(pane.id).or_insert_with(|| PaneData::new(pane.is_focusable()));
-            pane_data.area = area;
-            pane_data.block_area = block_area;
-            let mut pane_instance = pane_container.get_mut(&pane.pane, ctx)?;
-            pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
-            pane_call!(pane_instance, resize(pane_area, ctx))?;
-            Ok(())
-        })
+        self.panes.for_each_pane(
+            area,
+            &mut |pane, pane_area, _, block_area| {
+                let pane_data = self
+                    .pane_data
+                    .entry(pane.id)
+                    .or_insert_with(|| PaneData::new(pane.is_focusable()));
+                pane_data.area = area;
+                pane_data.block_area = block_area;
+                let mut pane_instance = pane_container.get_mut(&pane.pane, ctx)?;
+                pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
+                pane_call!(pane_instance, resize(pane_area, ctx))?;
+                Ok(())
+            },
+            ctx,
+        )
     }
 
     fn panes_directly_above(&self, focused_area: Rect) -> impl Iterator<Item = (&Id, &PaneData)> {

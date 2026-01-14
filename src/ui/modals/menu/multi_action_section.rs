@@ -116,7 +116,7 @@ impl Section for MultiActionSection<'_> {
         self.selected_idx = Some(idx);
     }
 
-    fn unselect(&mut self) {
+    fn unselect(&mut self, _ctx: &Ctx) {
         self.selected_idx = None;
     }
 
@@ -129,7 +129,7 @@ impl Section for MultiActionSection<'_> {
             }
         }
 
-        Ok(false)
+        Ok(true)
     }
 
     fn len(&self) -> usize {
@@ -173,7 +173,7 @@ impl Section for MultiActionSection<'_> {
         }
     }
 
-    fn left_click(&mut self, position: Position) {
+    fn left_click(&mut self, position: Position, _ctx: &Ctx) {
         if !self.area.contains(position) {
             return;
         }

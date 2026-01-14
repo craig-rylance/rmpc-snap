@@ -6,6 +6,7 @@ use itertools::Itertools;
 use ratatui::{
     Frame,
     layout::Alignment,
+    macros::constraint,
     prelude::{Constraint, Layout},
     style::Style,
     symbols::border,
@@ -13,13 +14,13 @@ use ratatui::{
     widgets::{Block, Borders, Clear},
 };
 
-use super::{BUTTON_GROUP_SYMBOLS, Modal, RectExt};
+use super::{BUTTON_GROUP_SYMBOLS, Modal};
 use crate::{
     config::{Size, keys::CommonAction},
     ctx::Ctx,
     shared::{
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     ui::widgets::button::{Button, ButtonGroup, ButtonGroupState},
@@ -33,6 +34,7 @@ pub struct InfoModal<'a> {
     button_group: ButtonGroup<'a>,
     replacement_id: Option<Cow<'static, str>>,
     size: Option<Size>,
+    percent_width: f32,
     title: Option<Cow<'a, str>>,
 }
 
@@ -40,10 +42,13 @@ pub struct InfoModal<'a> {
 #[bon]
 impl<'a> InfoModal<'a> {
     #[builder]
+    #[builder(on(Size, into))]
+    #[builder(on(f32, into))]
     pub fn new(
         ctx: &Ctx,
-        size: Option<impl Into<Size>>,
+        size: Option<Size>,
         confirm_label: Option<&'a str>,
+        percent_width: Option<f32>,
         message: Vec<String>,
         replacement_id: Option<impl Into<Cow<'static, str>>>,
         title: Option<impl Into<Cow<'a, str>>>,
@@ -67,9 +72,10 @@ impl<'a> InfoModal<'a> {
             message,
             button_group_state,
             button_group,
-            size: size.map(|s| s.into()),
+            size,
             title: title.map(|v| v.into()),
             replacement_id: replacement_id.map(|i| i.into()),
+            percent_width: percent_width.unwrap_or(50.0),
         }
     }
 }
@@ -82,7 +88,7 @@ impl Modal for InfoModal<'_> {
     fn render(&mut self, frame: &mut Frame, ctx: &mut Ctx) -> Result<()> {
         let width = match (frame.area().width, self.size) {
             (fw, Some(Size { width, .. })) => width.min(fw),
-            (fw, None) if fw > 60 => fw / 2,
+            (fw, None) if fw > 80 => (fw as f32 * (self.percent_width / 100f32)) as u16,
             (fw, None) => fw,
         };
 
@@ -93,9 +99,10 @@ impl Modal for InfoModal<'_> {
             .flat_map(|line| textwrap::wrap(line, (width as usize).saturating_sub(2)))
             .collect_vec();
 
-        let popup_area = frame
-            .area()
-            .centered_exact(width, self.size.map_or(u16::try_from(lines.len())? + 4, |v| v.height));
+        let popup_area = frame.area().centered(
+            constraint!(==width),
+            constraint!(==self.size.map_or(u16::try_from(lines.len())? + 4, |v| v.height)),
+        );
         frame.render_widget(Clear, popup_area);
 
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
@@ -136,8 +143,8 @@ impl Modal for InfoModal<'_> {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if let Some(CommonAction::Close | CommonAction::Confirm) = key.as_common_action(ctx) {
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(CommonAction::Close | CommonAction::Confirm) = key.claim_common() {
             self.hide(ctx)?;
         }
 

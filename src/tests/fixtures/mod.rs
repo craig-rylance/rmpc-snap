@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     os::unix::net::UnixStream,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crossbeam::channel::{Receiver, Sender, unbounded};
@@ -15,11 +15,14 @@ use crate::{
     ctx::{Ctx, StickersSupport},
     mpd::{commands::Status, version::Version},
     shared::{
-        events::{ClientRequest, WorkRequest},
+        events::{AppEvent, ClientRequest, WorkRequest},
         ipc::ipc_stream::IpcStream,
+        keys::KeyResolver,
         lrc::LrcIndex,
         ring_vec::RingVec,
+        ytdlp::YtDlpManager,
     },
+    ui::input::InputManager,
 };
 
 pub mod mpd_client;
@@ -46,25 +49,32 @@ pub fn client_request_channel() -> (Sender<ClientRequest>, Receiver<ClientReques
 }
 
 #[fixture]
+pub fn app_event_channel() -> (Sender<AppEvent>, Receiver<AppEvent>) {
+    unbounded()
+}
+
+#[fixture]
 pub fn ctx(
+    app_event_channel: (Sender<AppEvent>, Receiver<AppEvent>),
     work_request_channel: (Sender<WorkRequest>, Receiver<WorkRequest>),
     client_request_channel: (Sender<ClientRequest>, Receiver<ClientRequest>),
 ) -> Ctx {
-    let chan1 = unbounded();
     let config = ConfigFile::default()
         .into_config(None, None, None, None, true)
         .expect("Test default config to convert correctly");
 
-    let chan1 = Box::leak(Box::new(chan1));
-    let scheduler = Scheduler::new((chan1.0.clone(), unbounded().0));
+    let scheduler = Scheduler::new((app_event_channel.0.clone(), unbounded().0));
+    let key_resolver = KeyResolver::new(&config);
+    Box::leak(Box::new(app_event_channel.1.clone()));
     Ctx {
+        ytdlp_manager: YtDlpManager::new(work_request_channel.0.clone()),
         mpd_version: Version::new(1, 0, 0),
         status: Status::default(),
         config: std::sync::Arc::new(config),
         queue: Vec::default(),
         stickers: HashMap::new(),
         active_tab: TabName::from("test_tab"),
-        app_event_sender: chan1.0.clone(),
+        app_event_sender: app_event_channel.0.clone(),
         work_sender: work_request_channel.0.clone(),
         client_request_sender: client_request_channel.0.clone(),
         supported_commands: HashSet::new(),
@@ -78,6 +88,9 @@ pub fn ctx(
         messages: RingVec::default(),
         last_status_update: Instant::now(),
         song_played: None,
+        input: InputManager::default(),
+        key_resolver,
+        cached_queue_time_total: Duration::default(),
     }
 }
 

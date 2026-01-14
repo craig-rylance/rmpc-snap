@@ -6,13 +6,14 @@ use itertools::Itertools;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
+    macros::constraint,
     style::Style,
     symbols::border,
     text::Text,
     widgets::{Block, Borders, Cell, Clear, Row, Table, TableState},
 };
 
-use super::{Modal, RectExt};
+use super::Modal;
 use crate::{
     config::keys::CommonAction,
     ctx::Ctx,
@@ -20,7 +21,7 @@ use crate::{
     shared::{
         ext::duration::DurationExt,
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     ui::dirstack::DirState,
@@ -38,7 +39,7 @@ pub struct InfoListModal {
 }
 
 #[derive(Debug)]
-struct KeyValues(Vec<KeyValue>);
+pub struct KeyValues(Vec<KeyValue>);
 #[derive(Debug)]
 struct KeyValue {
     key: String,
@@ -96,7 +97,8 @@ impl Modal for InfoListModal {
     }
 
     fn render(&mut self, frame: &mut Frame, ctx: &mut Ctx) -> Result<()> {
-        let popup_area = frame.area().centered(self.size.0, self.size.1);
+        let (w, h) = self.size;
+        let popup_area = frame.area().centered(constraint!(==w%), constraint!(==h%));
         frame.render_widget(Clear, popup_area);
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
             frame.render_widget(Block::default().style(Style::default().bg(bg_color)), popup_area);
@@ -165,8 +167,8 @@ impl Modal for InfoListModal {
         return Ok(());
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if let Some(action) = key.as_common_action(ctx) {
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = key.claim_common() {
             match action {
                 CommonAction::DownHalf => {
                     self.scrolling_state.next_half_viewport(ctx.config.scrolloff);
@@ -224,11 +226,11 @@ impl Modal for InfoListModal {
             MouseEventKind::MiddleClick => {}
             MouseEventKind::RightClick => {}
             MouseEventKind::ScrollDown => {
-                self.scrolling_state.scroll_down(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::ScrollUp => {
-                self.scrolling_state.scroll_up(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::Drag { drag_start_position: _ } => {}

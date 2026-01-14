@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use anyhow::{Result, ensure};
 use derive_more::{Deref, Display, Into};
 use itertools::Itertools;
-use ratatui::{layout::Direction, widgets::Borders};
+use ratatui::{
+    layout::Direction,
+    widgets::{Borders, TitlePosition},
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use unicase::UniCase;
@@ -15,7 +18,16 @@ use super::theme::{
     queue_table::ParseSizeError,
     volume_slider::{VolumeSliderConfig, VolumeSliderConfigFile},
 };
-use crate::shared::id::{self, Id};
+use crate::{
+    config::{
+        defaults,
+        theme::{
+            borders::{BorderSetInherited, BorderSetLib, BorderSymbols, BorderSymbolsFile},
+            properties::{Alignment, PropertyKindFileOrText, StatusPropertyFile},
+        },
+    },
+    shared::id::{self, Id},
+};
 
 #[derive(Debug, Into, Deref, Display)]
 pub struct TabName(pub std::sync::Arc<String>);
@@ -56,6 +68,7 @@ impl std::hash::Hash for TabName {
 #[allow(clippy::large_enum_variant)]
 pub enum PaneTypeFile {
     Queue,
+    QueueHeader(),
     #[cfg(debug_assertions)]
     Logs,
     Directories,
@@ -94,6 +107,7 @@ pub enum PaneTypeFile {
 #[strum_discriminants(derive(strum::Display, Hash))]
 pub enum PaneType {
     Queue,
+    QueueHeader(),
     #[cfg(debug_assertions)]
     Logs,
     Directories,
@@ -129,7 +143,7 @@ pub const PANES_ALLOWED_IN_BOTH_TAB_AND_LAYOUT: [PaneTypeDiscriminants; 1] =
     [PaneTypeDiscriminants::Property];
 
 #[cfg(debug_assertions)]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 10] = [
+pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -140,10 +154,11 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 10] = [
     PaneTypeDiscriminants::FrameCount,
     PaneTypeDiscriminants::Property,
     PaneTypeDiscriminants::Cava,
+    PaneTypeDiscriminants::QueueHeader,
 ];
 
 #[cfg(not(debug_assertions))]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 9] = [
+pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 10] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -153,6 +168,7 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 9] = [
     PaneTypeDiscriminants::TabContent,
     PaneTypeDiscriminants::Property,
     PaneTypeDiscriminants::Cava,
+    PaneTypeDiscriminants::QueueHeader,
 ];
 
 impl Pane {
@@ -167,6 +183,7 @@ impl TryFrom<PaneTypeFile> for PaneType {
     fn try_from(value: PaneTypeFile) -> Result<PaneType, Self::Error> {
         Ok(match value {
             PaneTypeFile::Queue => PaneType::Queue,
+            PaneTypeFile::QueueHeader() => PaneType::QueueHeader(),
             #[cfg(debug_assertions)]
             PaneTypeFile::Logs => PaneType::Logs,
             PaneTypeFile::Directories => PaneType::Directories,
@@ -207,12 +224,19 @@ impl TryFrom<PaneTypeFile> for PaneType {
 }
 
 impl TabsFile {
-    pub fn convert(self, library: &HashMap<String, SizedPaneOrSplit>) -> Result<Tabs> {
+    pub fn convert(
+        self,
+        library: &HashMap<String, SizedPaneOrSplit>,
+        border_set_library: &BorderSetLib,
+    ) -> Result<Tabs> {
         let (names, tabs): (Vec<_>, HashMap<_, _>) = self
             .0
             .into_iter()
             .map(|tab| -> Result<_> {
-                Ok(Tab { name: tab.name.into(), panes: tab.pane.convert(library)? })
+                Ok(Tab {
+                    name: tab.name.into(),
+                    panes: tab.pane.convert(library, border_set_library)?,
+                })
             })
             .try_fold((Vec::new(), HashMap::new()), |(mut names, mut tabs), tab| -> Result<_> {
                 let tab = tab?;
@@ -236,7 +260,7 @@ pub enum BorderTypeFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct TabsFile(Vec<TabFile>);
+pub struct TabsFile(Vec<TabFile>);
 
 #[derive(Debug, Default, Clone)]
 pub struct Tabs {
@@ -290,6 +314,7 @@ pub enum PaneOrSplitFile {
     Component(String),
     Split {
         direction: DirectionFile,
+        // Maybe these should be deprecated in favor of using the SubPaneFile borders?
         #[serde(default)]
         borders: BordersFile,
         panes: Vec<SubPaneFile>,
@@ -303,23 +328,120 @@ impl Default for PaneOrSplitFile {
             borders: BordersFile::NONE,
             panes: vec![
                 SubPaneFile {
-                    size: "2".to_string(),
+                    size: "4".to_string(),
                     borders: BordersFile::NONE,
-                    pane: PaneOrSplitFile::Pane(PaneTypeFile::Header),
+                    border_title: Vec::new(),
+                    border_title_position: BorderTitlePosition::Top,
+                    border_title_alignment: Alignment::Left,
+                    border_symbols: BorderSymbolsFile::default(),
+                    pane: PaneOrSplitFile::Split {
+                        direction: DirectionFile::Horizontal,
+                        borders: BordersFile::NONE,
+                        panes: vec![
+                            SubPaneFile {
+                                size: "35".to_string(),
+                                borders: BordersFile::LEFT | BordersFile::TOP | BordersFile::BOTTOM,
+                                border_title: Vec::new(),
+                                border_title_position: BorderTitlePosition::Top,
+                                border_title_alignment: Alignment::Left,
+                                border_symbols: BorderSymbolsFile::Inherited(BorderSetInherited {
+                                    parent: Box::new(BorderSymbolsFile::Rounded),
+                                    bottom_left: Some("├".to_string()),
+                                    ..Default::default()
+                                }),
+                                pane: PaneOrSplitFile::Component("header_left".to_string()),
+                            },
+                            SubPaneFile {
+                                size: "100%".to_string(),
+                                borders: BordersFile::ALL,
+                                border_title: Vec::new(),
+                                border_title_position: BorderTitlePosition::Top,
+                                border_title_alignment: Alignment::Left,
+                                border_symbols: BorderSymbolsFile::Inherited(BorderSetInherited {
+                                    parent: Box::new(BorderSymbolsFile::Rounded),
+                                    top_left: Some("┬".to_string()),
+                                    top_right: Some("┬".to_string()),
+                                    bottom_left: Some("┴".to_string()),
+                                    bottom_right: Some("┴".to_string()),
+                                    ..Default::default()
+                                }),
+                                pane: PaneOrSplitFile::Component("header_center".to_string()),
+                            },
+                            SubPaneFile {
+                                size: "35".to_string(),
+                                borders: BordersFile::RIGHT
+                                    | BordersFile::TOP
+                                    | BordersFile::BOTTOM,
+                                border_title: Vec::new(),
+                                border_title_position: BorderTitlePosition::Top,
+                                border_title_alignment: Alignment::Left,
+                                border_symbols: BorderSymbolsFile::Inherited(BorderSetInherited {
+                                    parent: Box::new(BorderSymbolsFile::Rounded),
+                                    bottom_right: Some("┤".to_string()),
+                                    ..Default::default()
+                                }),
+                                pane: PaneOrSplitFile::Component("header_right".to_string()),
+                            },
+                        ],
+                    },
                 },
                 SubPaneFile {
-                    size: "3".to_string(),
-                    borders: BordersFile::NONE,
+                    size: "2".to_string(),
+                    borders: BordersFile::LEFT | BordersFile::RIGHT | BordersFile::BOTTOM,
+                    border_title: Vec::new(),
+                    border_title_position: BorderTitlePosition::Top,
+                    border_title_alignment: Alignment::Left,
+                    border_symbols: BorderSymbolsFile::Rounded,
                     pane: PaneOrSplitFile::Pane(PaneTypeFile::Tabs),
                 },
                 SubPaneFile {
                     size: "100%".to_string(),
                     borders: BordersFile::NONE,
+                    border_title: Vec::new(),
+                    border_title_position: BorderTitlePosition::Top,
+                    border_title_alignment: Alignment::Left,
+                    border_symbols: BorderSymbolsFile::default(),
                     pane: PaneOrSplitFile::Pane(PaneTypeFile::TabContent),
                 },
                 SubPaneFile {
-                    size: "1".to_string(),
-                    borders: BordersFile::NONE,
+                    size: "3".to_string(),
+                    borders: BordersFile::ALL,
+                    border_title: vec![
+                        PropertyFile {
+                            kind: PropertyKindFileOrText::Text(" ".to_string()),
+                            style: None,
+                            default: None,
+                        },
+                        PropertyFile {
+                            kind: PropertyKindFileOrText::Property(PropertyKindFile::Status(
+                                StatusPropertyFile::QueueLength {
+                                    thousands_separator: defaults::default_thousands_separator(),
+                                },
+                            )),
+                            style: None,
+                            default: None,
+                        },
+                        PropertyFile {
+                            kind: PropertyKindFileOrText::Text(" songs / ".to_string()),
+                            style: None,
+                            default: None,
+                        },
+                        PropertyFile {
+                            kind: PropertyKindFileOrText::Property(PropertyKindFile::Status(
+                                StatusPropertyFile::QueueTimeTotal { separator: None },
+                            )),
+                            style: None,
+                            default: None,
+                        },
+                        PropertyFile {
+                            kind: PropertyKindFileOrText::Text(" total time ".to_string()),
+                            style: None,
+                            default: None,
+                        },
+                    ],
+                    border_title_position: BorderTitlePosition::Top,
+                    border_title_alignment: Alignment::Right,
+                    border_symbols: BorderSymbolsFile::Rounded,
                     pane: PaneOrSplitFile::Pane(PaneTypeFile::ProgressBar),
                 },
             ],
@@ -346,11 +468,26 @@ impl From<BordersFile> for Borders {
     }
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BorderTitlePosition {
+    #[default]
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubPaneFile {
     pub size: String,
     #[serde(default)]
     pub borders: BordersFile,
+    #[serde(default)]
+    pub border_title: Vec<PropertyFile<PropertyKindFile>>,
+    #[serde(default)]
+    pub border_title_position: BorderTitlePosition,
+    #[serde(default)]
+    pub border_title_alignment: Alignment,
+    #[serde(default)]
+    pub border_symbols: BorderSymbolsFile,
     pub pane: PaneOrSplitFile,
 }
 
@@ -358,18 +495,38 @@ pub struct SubPaneFile {
 pub struct Pane {
     pub pane: PaneType,
     pub borders: Borders,
+    pub border_title: Vec<Property<PropertyKind>>,
+    pub border_title_position: TitlePosition,
+    pub border_title_alignment: ratatui::layout::Alignment,
+    pub border_symbols: BorderSymbols,
     pub id: Id,
 }
 
 #[derive(Debug, Clone)]
 pub enum SizedPaneOrSplit {
     Pane(Pane),
-    Split { borders: Borders, direction: Direction, panes: Vec<SizedSubPane> },
+    Split {
+        borders: Borders,
+        border_title: Vec<Property<PropertyKind>>,
+        border_title_position: TitlePosition,
+        border_title_alignment: ratatui::layout::Alignment,
+        border_symbols: BorderSymbols,
+        direction: Direction,
+        panes: Vec<SizedSubPane>,
+    },
 }
 
 impl Default for SizedPaneOrSplit {
     fn default() -> Self {
-        Self::Split { direction: Direction::Horizontal, panes: Vec::new(), borders: Borders::NONE }
+        Self::Split {
+            direction: Direction::Horizontal,
+            panes: Vec::new(),
+            borders: Borders::NONE,
+            border_title: Vec::new(),
+            border_title_position: TitlePosition::Top,
+            border_title_alignment: ratatui::layout::Alignment::Left,
+            border_symbols: BorderSymbols::default(),
+        }
     }
 }
 
@@ -383,6 +540,8 @@ pub struct SizedSubPane {
 pub enum PaneConversionError {
     #[error("Missing component: {0}")]
     MissingComponent(String),
+    #[error("Missing border set: {0}")]
+    MissingBorderSet(String),
     #[error("Failed to parse pane size: {0}")]
     ParseError(#[from] ParseSizeError),
     #[error("Failed to parse pane: {0}")]
@@ -390,41 +549,96 @@ pub enum PaneConversionError {
 }
 
 impl PaneOrSplitFile {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Recursive function, used only here. More trouble than it is worth to refactor at this point"
+    )]
     pub fn convert_recursive(
         &self,
         b: Borders,
+        b_title: Vec<Property<PropertyKind>>,
+        b_pos: TitlePosition,
+        b_alignment: ratatui::layout::Alignment,
+        b_symbols: BorderSymbols,
         library: &HashMap<String, SizedPaneOrSplit>,
+        border_set_library: &BorderSetLib,
     ) -> Result<SizedPaneOrSplit, PaneConversionError> {
         Ok(match self {
             PaneOrSplitFile::Pane(pane_type_file) => SizedPaneOrSplit::Pane(Pane {
                 pane: pane_type_file.clone().try_into()?,
                 borders: b,
+                border_title: b_title,
+                border_title_position: b_pos,
+                border_title_alignment: b_alignment,
+                border_symbols: b_symbols,
                 id: id::new(),
             }),
+            // Components need to get border etc from the usage site and NOT the ones they are given
+            // during resolution because they are given default values initially.
             PaneOrSplitFile::Component(name) => match library.get(name) {
                 Some(SizedPaneOrSplit::Pane(pane)) => {
                     let mut v = pane.clone();
                     v.borders = b;
+                    v.border_title.clone_from(&b_title);
+                    v.border_symbols = b_symbols;
+                    v.border_title_alignment = b_alignment;
+                    v.border_title_position = b_pos;
                     SizedPaneOrSplit::Pane(v)
                 }
-                Some(SizedPaneOrSplit::Split { borders, direction, panes }) => {
-                    SizedPaneOrSplit::Split {
-                        borders: *borders | b,
-                        direction: *direction,
-                        panes: panes.clone(),
-                    }
-                }
+                Some(SizedPaneOrSplit::Split {
+                    borders,
+                    direction,
+                    panes,
+                    border_title: _,
+                    border_title_position: _,
+                    border_title_alignment: _,
+                    border_symbols: _,
+                }) => SizedPaneOrSplit::Split {
+                    borders: *borders | b,
+                    border_title: b_title,
+                    border_title_position: b_pos,
+                    border_title_alignment: b_alignment,
+                    border_symbols: b_symbols.clone(),
+                    direction: *direction,
+                    panes: panes.clone(),
+                },
                 None => return Err(PaneConversionError::MissingComponent(name.clone())),
             },
             PaneOrSplitFile::Split { direction, borders, panes } => SizedPaneOrSplit::Split {
                 direction: direction.into(),
                 borders: Into::<Borders>::into(*borders) | b,
+                border_title: b_title,
+                border_title_position: b_pos,
+                border_title_alignment: b_alignment,
+                border_symbols: b_symbols,
                 panes: panes
                     .iter()
                     .map(|sub_pane| -> Result<SizedSubPane, PaneConversionError> {
-                        let borders: Borders = sub_pane.borders.into();
                         let size: PercentOrLength = sub_pane.size.parse()?;
-                        let pane = sub_pane.pane.convert_recursive(borders, library)?;
+                        let borders: Borders = sub_pane.borders.into();
+                        let b_title = sub_pane
+                            .border_title
+                            .iter()
+                            .cloned()
+                            .map(Property::try_from)
+                            .try_collect()?;
+
+                        let b_pos = match sub_pane.border_title_position {
+                            BorderTitlePosition::Top => TitlePosition::Top,
+                            BorderTitlePosition::Bottom => TitlePosition::Bottom,
+                        };
+                        let b_alignment = sub_pane.border_title_alignment.into();
+                        let b_symbols =
+                            sub_pane.border_symbols.clone().into_symbols(border_set_library)?;
+                        let pane = sub_pane.pane.convert_recursive(
+                            borders,
+                            b_title,
+                            b_pos,
+                            b_alignment,
+                            b_symbols,
+                            library,
+                            border_set_library,
+                        )?;
 
                         Ok(SizedSubPane { size, pane })
                     })
@@ -436,8 +650,17 @@ impl PaneOrSplitFile {
     pub fn convert(
         &self,
         library: &HashMap<String, SizedPaneOrSplit>,
+        border_set_library: &BorderSetLib,
     ) -> Result<SizedPaneOrSplit, PaneConversionError> {
-        self.convert_recursive(Borders::NONE, library)
+        self.convert_recursive(
+            Borders::NONE,
+            Vec::new(),
+            TitlePosition::default(),
+            ratatui::layout::Alignment::default(),
+            BorderSymbols::default(),
+            library,
+            border_set_library,
+        )
     }
 }
 
@@ -484,29 +707,154 @@ impl Default for TabsFile {
                     borders: BordersFile::NONE,
                     panes: vec![
                         SubPaneFile {
-                            size: "40%".to_string(),
+                            size: "35%".to_string(),
                             borders: BordersFile::NONE,
+                            border_title: Vec::new(),
+                            border_title_position: BorderTitlePosition::Top,
+                            border_title_alignment: Alignment::Left,
+                            border_symbols: BorderSymbolsFile::default(),
                             pane: PaneOrSplitFile::Split {
                                 direction: DirectionFile::Vertical,
                                 borders: BordersFile::NONE,
                                 panes: vec![
                                     SubPaneFile {
-                                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Lyrics),
-                                        size: "3".to_string(),
-                                        borders: BordersFile::NONE,
-                                    },
-                                    SubPaneFile {
                                         pane: PaneOrSplitFile::Pane(PaneTypeFile::AlbumArt),
                                         size: "100%".to_string(),
-                                        borders: BordersFile::NONE,
+                                        borders: BordersFile::TOP
+                                            | BordersFile::LEFT
+                                            | BordersFile::RIGHT,
+                                        border_title_position: BorderTitlePosition::Top,
+                                        border_title_alignment: Alignment::Left,
+                                        border_symbols: BorderSymbolsFile::Rounded,
+                                        border_title: Vec::new(),
+                                    },
+                                    SubPaneFile {
+                                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Lyrics),
+                                        size: "6".to_string(),
+                                        border_title: vec![PropertyFile {
+                                            kind: PropertyKindFileOrText::Text(
+                                                " Lyrics ".to_string(),
+                                            ),
+                                            style: None,
+                                            default: None,
+                                        }],
+                                        borders: BordersFile::ALL,
+                                        border_title_position: BorderTitlePosition::Top,
+                                        border_title_alignment: Alignment::Right,
+                                        border_symbols: BorderSymbolsFile::Inherited(
+                                            BorderSetInherited {
+                                                parent: Box::new(BorderSymbolsFile::Rounded),
+                                                top_left: Some("├".to_string()),
+                                                top_right: Some("┤".to_string()),
+                                                ..Default::default()
+                                            },
+                                        ),
                                     },
                                 ],
                             },
                         },
                         SubPaneFile {
-                            pane: PaneOrSplitFile::Pane(PaneTypeFile::Queue),
-                            size: "60%".to_string(),
+                            size: "65%".to_string(),
                             borders: BordersFile::NONE,
+                            border_title: Vec::new(),
+                            border_title_position: BorderTitlePosition::Top,
+                            border_title_alignment: Alignment::Left,
+                            border_symbols: BorderSymbolsFile::default(),
+                            pane: PaneOrSplitFile::Split {
+                                direction: DirectionFile::Vertical,
+                                borders: BordersFile::NONE,
+                                panes: vec![
+                                    SubPaneFile {
+                                        size: "3".to_string(),
+                                        borders: BordersFile::ALL,
+                                        border_title: Vec::new(),
+                                        border_title_position: BorderTitlePosition::Top,
+                                        border_title_alignment: Alignment::Left,
+                                        border_symbols: BorderSymbolsFile::Inherited(
+                                            BorderSetInherited {
+                                                parent: Box::new(BorderSymbolsFile::Rounded),
+                                                bottom_left: Some("├".to_string()),
+                                                bottom_right: Some("┤".to_string()),
+                                                ..Default::default()
+                                            },
+                                        ),
+                                        pane: PaneOrSplitFile::Split {
+                                            direction: DirectionFile::Horizontal,
+                                            borders: BordersFile::NONE,
+                                            panes: vec![
+                                                SubPaneFile {
+                                                    pane: PaneOrSplitFile::Pane(
+                                                        PaneTypeFile::Property {
+                                                            content: vec![],
+                                                            align: Alignment::default(),
+                                                            scroll_speed: 0,
+                                                        },
+                                                    ),
+                                                    size: "1".to_string(),
+                                                    borders: BordersFile::NONE,
+                                                    border_title: Vec::new(),
+                                                    border_title_position: BorderTitlePosition::Top,
+                                                    border_title_alignment: Alignment::Left,
+                                                    border_symbols: BorderSymbolsFile::default(),
+                                                },
+                                                SubPaneFile {
+                                                    size: "100%".to_string(),
+                                                    borders: BordersFile::NONE,
+                                                    border_title: Vec::new(),
+                                                    border_title_position: BorderTitlePosition::Top,
+                                                    border_title_alignment: Alignment::Left,
+                                                    border_symbols: BorderSymbolsFile::default(),
+                                                    pane: PaneOrSplitFile::Pane(
+                                                        PaneTypeFile::QueueHeader(),
+                                                    ),
+                                                },
+                                            ],
+                                        },
+                                    },
+                                    SubPaneFile {
+                                        size: "100%".to_string(),
+                                        borders: BordersFile::LEFT
+                                            | BordersFile::RIGHT
+                                            | BordersFile::BOTTOM,
+                                        border_title: Vec::new(),
+                                        border_title_position: BorderTitlePosition::Top,
+                                        border_title_alignment: Alignment::Left,
+                                        border_symbols: BorderSymbolsFile::Rounded,
+                                        pane: PaneOrSplitFile::Split {
+                                            direction: DirectionFile::Horizontal,
+                                            borders: BordersFile::NONE,
+                                            panes: vec![
+                                                SubPaneFile {
+                                                    pane: PaneOrSplitFile::Pane(
+                                                        PaneTypeFile::Property {
+                                                            content: vec![],
+                                                            align: Alignment::default(),
+                                                            scroll_speed: 0,
+                                                        },
+                                                    ),
+                                                    size: "1".to_string(),
+                                                    borders: BordersFile::NONE,
+                                                    border_title: Vec::new(),
+                                                    border_title_position: BorderTitlePosition::Top,
+                                                    border_title_alignment: Alignment::Left,
+                                                    border_symbols: BorderSymbolsFile::default(),
+                                                },
+                                                SubPaneFile {
+                                                    size: "100%".to_string(),
+                                                    borders: BordersFile::NONE,
+                                                    border_title: Vec::new(),
+                                                    border_title_position: BorderTitlePosition::Top,
+                                                    border_title_alignment: Alignment::Left,
+                                                    border_symbols: BorderSymbolsFile::default(),
+                                                    pane: PaneOrSplitFile::Pane(
+                                                        PaneTypeFile::Queue,
+                                                    ),
+                                                },
+                                            ],
+                                        },
+                                    },
+                                ],
+                            },
                         },
                     ],
                 },
@@ -516,37 +864,121 @@ impl Default for TabsFile {
             TabFile {
                 name: "Logs".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Logs),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Logs),
+                    }],
+                },
             },
             TabFile {
                 name: "Directories".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Directories),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Directories),
+                    }],
+                },
             },
             TabFile {
                 name: "Artists".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Artists),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Artists),
+                    }],
+                },
             },
             TabFile {
                 name: "Album Artists".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::AlbumArtists),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::AlbumArtists),
+                    }],
+                },
             },
             TabFile {
                 name: "Albums".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Albums),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Albums),
+                    }],
+                },
             },
             TabFile {
                 name: "Playlists".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Playlists),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Playlists),
+                    }],
+                },
             },
             TabFile {
                 name: "Search".to_string(),
                 border_type: BorderTypeFile::None,
-                pane: PaneOrSplitFile::Pane(PaneTypeFile::Search),
+                pane: PaneOrSplitFile::Split {
+                    borders: BordersFile::NONE,
+                    direction: DirectionFile::Vertical,
+                    panes: vec![SubPaneFile {
+                        size: "100%".to_string(),
+                        borders: BordersFile::ALL,
+                        border_title: Vec::new(),
+                        border_title_position: BorderTitlePosition::Top,
+                        border_title_alignment: Alignment::Left,
+                        border_symbols: BorderSymbolsFile::Rounded,
+                        pane: PaneOrSplitFile::Pane(PaneTypeFile::Search),
+                    }],
+                },
             },
         ])
     }

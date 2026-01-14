@@ -43,7 +43,10 @@ use self::{
     theme::{ConfigColor, UiConfig, UiConfigFile},
 };
 use crate::{
-    config::tabs::{SizedPaneOrSplit, Tab, TabName},
+    config::{
+        tabs::{SizedPaneOrSplit, Tab, TabName},
+        utils::tilde_expand_path,
+    },
     shared::{lrc::LrcOffset, terminal::TERMINAL},
     tmux,
 };
@@ -56,12 +59,17 @@ pub struct Config {
     pub cache_dir: Option<PathBuf>,
     pub lyrics_dir: Option<String>,
     pub lyrics_offset: LrcOffset,
+    pub enable_lyrics_index: bool,
+    pub enable_lyrics_hot_reload: bool,
     pub volume_step: u8,
     pub max_fps: u32,
     pub scrolloff: usize,
     pub wrap_navigation: bool,
     pub keybinds: KeyConfig,
+    pub normal_timeout_ms: u64,
+    pub insert_timeout_ms: u64,
     pub enable_mouse: bool,
+    pub scroll_amount: usize,
     pub enable_config_hot_reload: bool,
     pub status_update_interval_ms: Option<u64>,
     pub select_current_song_on_change: bool,
@@ -81,11 +89,13 @@ pub struct Config {
     pub search: Search,
     pub artists: Artists,
     pub tabs: Tabs,
+    pub original_tabs_definition: TabsFile,
     pub active_panes: Vec<PaneType>,
     pub browser_song_sort: Arc<SortOptions>,
     pub show_playlists_in_browser: ShowPlaylistsMode,
     pub directories_sort: Arc<SortOptions>,
     pub cava: Cava,
+    pub auto_open_downloads: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -109,6 +119,10 @@ pub struct ConfigFile {
     lyrics_dir: Option<String>,
     #[serde(default = "defaults::i64::<0>")]
     lyrics_offset_ms: i64,
+    #[serde(default = "defaults::bool::<true>")]
+    enable_lyrics_index: bool,
+    #[serde(default = "defaults::bool::<false>")]
+    enable_lyrics_hot_reload: bool,
     #[serde(default)]
     pub theme: Option<String>,
     #[serde(default = "defaults::u8::<5>")]
@@ -139,10 +153,16 @@ pub struct ConfigFile {
     mpd_idle_read_timeout_ms: Option<u64>,
     #[serde(default = "defaults::bool::<true>")]
     enable_mouse: bool,
+    #[serde(default = "defaults::usize::<1>")]
+    scroll_amount: usize,
     #[serde(default = "defaults::bool::<true>")]
     pub enable_config_hot_reload: bool,
     #[serde(default)]
     keybinds: KeyConfigFile,
+    #[serde(default = "defaults::u64::<1000>")]
+    pub normal_timeout_ms: u64,
+    #[serde(default = "defaults::u64::<1000>")]
+    pub insert_timeout_ms: u64,
     // Deprecated
     #[serde(default)]
     image_method: Option<ImageMethodFile>,
@@ -172,6 +192,8 @@ pub struct ConfigFile {
     pub directories_sort: SortModeFile,
     #[serde(default)]
     pub cava: CavaFile,
+    #[serde(default = "defaults::bool::<true>")]
+    pub auto_open_downloads: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
@@ -197,6 +219,8 @@ impl Default for ConfigFile {
         Self {
             address: String::from("127.0.0.1:6600"),
             keybinds: KeyConfigFile::default(),
+            normal_timeout_ms: 1000,
+            insert_timeout_ms: 1000,
             volume_step: 5,
             scrolloff: 0,
             status_update_interval_ms: Some(1000),
@@ -208,6 +232,8 @@ impl Default for ConfigFile {
             cache_dir: None,
             lyrics_dir: None,
             lyrics_offset_ms: 0,
+            enable_lyrics_index: true,
+            enable_lyrics_hot_reload: false,
             image_method: None,
             select_current_song_on_change: false,
             center_current_song_on_change: false,
@@ -222,6 +248,7 @@ impl Default for ConfigFile {
             search: SearchFile::default(),
             tabs: TabsFile::default(),
             enable_mouse: true,
+            scroll_amount: 1,
             enable_config_hot_reload: true,
             wrap_navigation: false,
             password: None,
@@ -234,6 +261,7 @@ impl Default for ConfigFile {
             reflect_changes_to_playlist: false,
             cava: CavaFile::default(),
             show_playlists_in_browser: ShowPlaylistsMode::default(),
+            auto_open_downloads: true,
         }
     }
 }
@@ -382,7 +410,8 @@ impl ConfigFile {
 
         let theme = UiConfig::try_from(theme)?;
 
-        let tabs: Tabs = self.tabs.convert(&theme.components)?;
+        let original_tabs_definition = self.tabs.clone();
+        let tabs: Tabs = self.tabs.convert(&theme.components, &theme.border_symbol_sets)?;
         let active_panes = Config::calc_active_panes(&tabs.tabs, &theme.layout);
 
         let (address, password) =
@@ -390,13 +419,16 @@ impl ConfigFile {
         let album_art_method = self.album_art.method;
         let mut config = Config {
             theme_name: self.theme,
-            cache_dir: self.cache_dir,
+            cache_dir: self.cache_dir.map(|v| tilde_expand_path(&v)),
             lyrics_dir: self.lyrics_dir.map(|v| {
                 let v = tilde_expand(&v);
                 if v.ends_with('/') { v.into_owned() } else { format!("{v}/") }
             }),
             lyrics_offset: LrcOffset::from_millis(self.lyrics_offset_ms),
+            enable_lyrics_index: self.enable_lyrics_index,
+            enable_lyrics_hot_reload: self.enable_lyrics_hot_reload,
             tabs,
+            original_tabs_definition,
             active_panes,
             address,
             password,
@@ -409,7 +441,10 @@ impl ConfigFile {
             mpd_write_timeout: Duration::from_millis(self.mpd_write_timeout_ms),
             mpd_idle_read_timeout_ms: self.mpd_idle_read_timeout_ms.map(Duration::from_millis),
             enable_mouse: self.enable_mouse,
+            scroll_amount: self.scroll_amount,
             enable_config_hot_reload: self.enable_config_hot_reload,
+            normal_timeout_ms: self.normal_timeout_ms,
+            insert_timeout_ms: self.insert_timeout_ms,
             keybinds: self.keybinds.try_into()?,
             select_current_song_on_change: self.select_current_song_on_change,
             center_current_song_on_change: self.center_current_song_on_change,
@@ -470,6 +505,7 @@ impl ConfigFile {
             keep_state_on_song_change: self.keep_state_on_song_change,
             reflect_changes_to_playlist: self.reflect_changes_to_playlist,
             cava: self.cava.into(),
+            auto_open_downloads: self.auto_open_downloads,
         };
 
         if skip_album_art_check {
@@ -516,18 +552,39 @@ impl From<OnOffOneshot> for crate::mpd::commands::status::OnOffOneshot {
 }
 
 pub mod utils {
-    use std::{borrow::Cow, path::MAIN_SEPARATOR};
+    use std::{
+        borrow::Cow,
+        path::{MAIN_SEPARATOR, Path, PathBuf},
+    };
 
     use crate::shared::env::ENV;
+
+    pub fn tilde_expand_path(inp: &Path) -> PathBuf {
+        let Ok(home) = ENV.var("HOME") else {
+            return inp.to_owned();
+        };
+        let home = home.strip_suffix(MAIN_SEPARATOR).unwrap_or(home.as_ref());
+
+        if let Ok(inp) = inp.strip_prefix("~") {
+            if inp.as_os_str().is_empty() {
+                return home.into();
+            }
+
+            return PathBuf::from(home.to_owned()).join(inp);
+        }
+
+        inp.to_path_buf()
+    }
 
     pub fn tilde_expand(inp: &str) -> Cow<'_, str> {
         let Ok(home) = ENV.var("HOME") else {
             return Cow::Borrowed(inp);
         };
+        let home = home.strip_suffix("/").unwrap_or(home.as_ref());
 
         if let Some(inp) = inp.strip_prefix('~') {
             if inp.is_empty() {
-                return Cow::Owned(home);
+                return Cow::Owned(home.to_owned());
             }
 
             if inp.starts_with(MAIN_SEPARATOR) {
@@ -541,12 +598,15 @@ pub mod utils {
     #[cfg(test)]
     #[allow(clippy::unwrap_used)]
     mod tests {
-        use std::sync::{LazyLock, Mutex};
+        use std::{
+            path::PathBuf,
+            sync::{LazyLock, Mutex},
+        };
 
         use test_case::test_case;
 
         use super::tilde_expand;
-        use crate::shared::env::ENV;
+        use crate::{config::utils::tilde_expand_path, shared::env::ENV};
 
         static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -560,7 +620,7 @@ pub mod utils {
             let _guard = TEST_LOCK.lock().unwrap();
 
             ENV.clear();
-            ENV.set("HOME".to_string(), "/home/some_user".to_string());
+            ENV.set("HOME".to_string(), "/home/some_user/".to_string());
             assert_eq!(tilde_expand(input), expected);
         }
 
@@ -576,6 +636,38 @@ pub mod utils {
             ENV.clear();
             ENV.remove("HOME");
             assert_eq!(tilde_expand(input), expected);
+        }
+
+        #[test_case("~", "/home/some_user")]
+        #[test_case("~enene", "~enene")]
+        #[test_case("~nope/", "~nope/")]
+        #[test_case("~/yes", "/home/some_user/yes")]
+        #[test_case("no/~/no", "no/~/no")]
+        #[test_case("basic/path", "basic/path")]
+        fn home_dir_present_path(input: &str, expected: &str) {
+            let _guard = TEST_LOCK.lock().unwrap();
+
+            ENV.clear();
+            ENV.set("HOME".to_string(), "/home/some_user/".to_string());
+
+            let got = tilde_expand_path(&PathBuf::from(input));
+            assert_eq!(got, PathBuf::from(expected));
+        }
+
+        #[test_case("~", "~")]
+        #[test_case("~enene", "~enene")]
+        #[test_case("~nope/", "~nope/")]
+        #[test_case("~/yes", "~/yes")]
+        #[test_case("no/~/no", "no/~/no")]
+        #[test_case("basic/path", "basic/path")]
+        fn home_dir_not_present_path(input: &str, expected: &str) {
+            let _guard = TEST_LOCK.lock().unwrap();
+
+            ENV.clear();
+            ENV.remove("HOME");
+
+            let got = tilde_expand_path(&PathBuf::from(input));
+            assert_eq!(got, PathBuf::from(expected));
         }
     }
 }

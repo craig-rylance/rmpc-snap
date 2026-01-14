@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use crossterm::event::KeyCode;
 use enum_map::EnumMap;
 use itertools::Itertools;
 use ratatui::{prelude::Rect, widgets::ListState};
@@ -16,15 +15,17 @@ use crate::{
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
     mpd::{client::Client, commands::Song, mpd_client::MpdClient},
     shared::{
-        key_event::KeyEvent,
-        macros::{modal, status_warn},
+        keys::ActionEvent,
+        macros::{modal, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
         mpd_client_ext::{Enqueue, MpdClientExt, MpdDelete},
         mpd_query::EXTERNAL_COMMAND,
     },
     ui::{
         dirstack::{DirStack, DirStackItem, WalkDirStackItem},
+        input::InputResultEvent,
         modals::{
+            confirm_modal::{Action, ConfirmModal},
             input_modal::InputModal,
             menu::{
                 add_to_playlist_or_show_modal,
@@ -61,8 +62,6 @@ where
         let scrollbar = areas[BrowserArea::Scrollbar];
         if scrollbar.width > 0 { Some(scrollbar) } else { None }
     }
-    fn set_filter_input_mode_active(&mut self, active: bool);
-    fn is_filter_input_mode_active(&self) -> bool;
     fn open(&mut self, autoplay: bool, ctx: &Ctx) -> Result<()> {
         let Some(selected) = self.stack().current().selected() else {
             log::error!("Failed to move deeper inside dir. Current value is None");
@@ -184,47 +183,33 @@ where
     fn move_selected(&mut self, direction: MoveDirection, ctx: &Ctx) -> Result<()> {
         Ok(())
     }
-    fn handle_filter_input(&mut self, event: &mut KeyEvent, ctx: &Ctx) -> Result<()> {
-        if !self.is_filter_input_mode_active() {
-            return Ok(());
-        }
 
+    fn handle_insert_mode(&mut self, kind: InputResultEvent, ctx: &mut Ctx) -> Result<()> {
         let song_format = ctx.config.theme.browser_song_format.0.as_slice();
         let config = &ctx.config;
-        match event.as_common_action(ctx) {
-            Some(CommonAction::Close) => {
-                self.set_filter_input_mode_active(false);
-                self.stack_mut().current_mut().set_filter(None, song_format, ctx);
+        match kind {
+            InputResultEvent::Push => {
+                self.stack_mut().current_mut().jump_first_matching(song_format, ctx);
+                self.stack_mut().current_mut().recalculate_matched_items(song_format, ctx);
                 self.fetch_data_internal(ctx);
-                ctx.render()?;
             }
-            Some(CommonAction::Confirm) => {
-                self.set_filter_input_mode_active(false);
-                ctx.render()?;
+            InputResultEvent::Pop => {
+                self.stack_mut().current_mut().recalculate_matched_items(song_format, ctx);
             }
-            _ => {
-                event.stop_propagation();
-                match event.code() {
-                    KeyCode::Char(c) => {
-                        self.stack_mut().current_mut().push_filter(c, song_format, ctx);
-                        self.stack_mut().current_mut().jump_first_matching(song_format, ctx);
-                        self.fetch_data_internal(ctx);
-                        ctx.render()?;
-                    }
-                    KeyCode::Backspace => {
-                        self.stack_mut().current_mut().pop_filter(song_format, ctx);
-                        ctx.render()?;
-                    }
-                    _ => {}
-                }
+            InputResultEvent::Confirm => {}
+            InputResultEvent::NoChange => {}
+            InputResultEvent::Cancel => {
+                self.stack_mut().current_mut().set_filter_active(false);
+                ctx.input.clear_buffer(self.stack().current().filter_buffer_id);
+                self.fetch_data_internal(ctx);
             }
         }
-
+        ctx.render()?;
         Ok(())
     }
 
-    fn handle_global_action(&mut self, event: &mut KeyEvent, ctx: &Ctx) -> Result<()> {
-        let Some(action) = event.as_global_action(ctx) else {
+    fn handle_global_action(&mut self, event: &mut ActionEvent, ctx: &Ctx) -> Result<()> {
+        let Some(action) = event.claim_global() else {
             return Ok(());
         };
 
@@ -374,12 +359,16 @@ where
                 self.fetch_data_internal(ctx);
             }
             MouseEventKind::ScrollUp if current_area.contains(position) => {
-                self.stack_mut().current_mut().scroll_up(1, ctx.config.scrolloff);
+                self.stack_mut()
+                    .current_mut()
+                    .scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
             MouseEventKind::ScrollDown if current_area.contains(position) => {
-                self.stack_mut().current_mut().scroll_down(1, ctx.config.scrolloff);
+                self.stack_mut()
+                    .current_mut()
+                    .scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 self.fetch_data_internal(ctx);
                 ctx.render()?;
             }
@@ -402,8 +391,8 @@ where
         Ok(())
     }
 
-    fn handle_common_action(&mut self, event: &mut KeyEvent, ctx: &Ctx) -> Result<()> {
-        let Some(action) = event.as_common_action(ctx) else {
+    fn handle_common_action(&mut self, event: &mut ActionEvent, ctx: &Ctx) -> Result<()> {
+        let Some(action) = event.claim_common() else {
             return Ok(());
         };
         let config = &ctx.config;
@@ -466,13 +455,9 @@ where
                 ctx.render()?;
             }
             CommonAction::EnterSearch => {
-                self.set_filter_input_mode_active(true);
-                self.stack_mut().current_mut().set_filter(
-                    Some(String::new()),
-                    ctx.config.theme.browser_song_format.0.as_slice(),
-                    ctx,
-                );
-
+                ctx.input.insert_mode(self.stack().current().filter_buffer_id);
+                ctx.input.clear_buffer(self.stack().current().filter_buffer_id);
+                self.stack_mut().current_mut().set_filter_active(true);
                 ctx.render()?;
             }
             CommonAction::NextResult => {
@@ -509,10 +494,30 @@ where
             CommonAction::Delete => {
                 let items = self.delete_items(false);
                 if !items.is_empty() {
-                    ctx.command(move |client| {
-                        client.delete_multiple(items)?;
-                        Ok(())
-                    });
+                    let len = items.len();
+                    modal!(
+                        ctx,
+                        ConfirmModal::builder()
+                            .ctx(ctx)
+                            .message(vec![
+                                format!("Are you sure you want to delete {} items?", len),
+                                "This action cannot be undone.".into()
+                            ])
+                            .action(Action::Single {
+                                confirm_label: Some("Delete"),
+                                cancel_label: None,
+                                on_confirm: Box::new(move |ctx| {
+                                    ctx.command(move |client| {
+                                        client.delete_multiple(items)?;
+                                        Ok(())
+                                    });
+                                    status_info!("Deleted {} items", len);
+                                    Ok(())
+                                }),
+                            })
+                            .size((45, 6))
+                            .build()
+                    );
                     self.stack_mut().current_mut().marked_mut().clear();
                 }
             }

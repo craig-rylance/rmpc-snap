@@ -1,28 +1,27 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use crossterm::event::KeyCode;
 use enum_map::{Enum, EnumMap, enum_map};
 use itertools::Itertools;
 use ratatui::{
     Frame,
     layout::Flex,
     prelude::{Constraint, Layout, Rect},
-    style::{Style, Styled, Stylize},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Row, TableState},
 };
 
-use super::{CommonAction, Pane};
+use super::Pane;
 use crate::{
     MpdQueryResult,
     config::{
         keys::{
+            CommonAction,
             GlobalAction,
             QueueActions,
             actions::{AddKind, AutoplayKind, DeleteKind, RateKind, SaveKind},
         },
-        tabs::PaneType,
         theme::{
             AlbumSeparator,
             properties::{Property, SongProperty},
@@ -30,22 +29,19 @@ use crate::{
     },
     core::command::{create_env, run_external},
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
-    mpd::{
-        QueuePosition,
-        client::Client,
-        commands::Song,
-        mpd_client::{MpdClient, SingleOrRange},
-    },
+    mpd::{QueuePosition, client::Client, commands::Song, mpd_client::MpdClient},
     shared::{
         ext::{btreeset_ranges::BTreeSetRanges, rect::RectExt},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
         mpd_client_ext::{Enqueue, MpdClientExt},
+        song_ext::SongsExt,
     },
     ui::{
         UiEvent,
         dirstack::Dir,
+        input::InputResultEvent,
         modals::{
             confirm_modal::{Action, ConfirmModal},
             info_list_modal::InfoListModal,
@@ -61,14 +57,14 @@ use crate::{
             },
             select_modal::SelectModal,
         },
+        panes::queue_header::QueueHeaderPane,
+        widgets::virtualized_table::VirtualizedTable,
     },
 };
 
 #[derive(Debug)]
 pub struct QueuePane {
     queue: Dir<Song, TableState>,
-    filter_input_mode: bool,
-    header: Vec<String>,
     column_widths: Vec<Constraint>,
     column_formats: Vec<Property<SongProperty>>,
     areas: EnumMap<Areas, Rect>,
@@ -78,8 +74,6 @@ pub struct QueuePane {
 #[derive(Debug, Enum)]
 enum Areas {
     Table,
-    TableBlock,
-    TableHeader,
     Scrollbar,
     FilterArea,
 }
@@ -89,12 +83,10 @@ const ADD_TO_PLAYLIST_MULTIPLE: &str = "add_to_playlist_multiple";
 
 impl QueuePane {
     pub fn new(ctx: &Ctx) -> Self {
-        let (header, column_widths, column_formats) = Self::init(ctx);
+        let (column_widths, column_formats) = Self::init(ctx);
 
         Self {
             queue: Dir::new(ctx.queue.clone()),
-            filter_input_mode: false,
-            header,
             column_widths,
             column_formats,
             areas: enum_map! {
@@ -104,9 +96,8 @@ impl QueuePane {
         }
     }
 
-    fn init(ctx: &Ctx) -> (Vec<String>, Vec<Constraint>, Vec<Property<SongProperty>>) {
+    pub fn init(ctx: &Ctx) -> (Vec<Constraint>, Vec<Property<SongProperty>>) {
         (
-            ctx.config.theme.song_table_format.iter().map(|v| v.label.clone()).collect_vec(),
             ctx.config
                 .theme
                 .song_table_format
@@ -257,21 +248,15 @@ impl Pane for QueuePane {
         let Ctx { config, .. } = ctx;
         self.calculate_areas(area, ctx)?;
 
-        let filter_text = self
-            .queue
-            .filter()
-            .map(|v| format!("[FILTER]: {v}{} ", if self.filter_input_mode { "█" } else { "" }));
+        let filter_text = self.queue.filter_text(self.areas[Areas::Table].width, ctx);
 
         let table_block = {
             let border_style = config.as_border_style();
             let mut b = Block::default().border_style(border_style);
-            if config.theme.show_song_table_header {
-                b = b.borders(Borders::TOP);
-            }
             if self.areas[Areas::FilterArea].height == 0
                 && let Some(ref title) = filter_text
             {
-                b = b.title(title.clone().set_style(border_style));
+                b = b.title(title.clone());
             }
             b
         };
@@ -288,105 +273,85 @@ impl Pane for QueuePane {
 
         let formats = &config.theme.song_table_format;
 
-        let offset = self.queue.state.as_render_state_ref().offset();
-        let viewport_len = self.queue.state.viewport_len().unwrap_or_default();
-
         let marker_symbol_len = config.theme.symbols.marker.chars().count();
-        let mut table_iter = self.queue.items.iter().enumerate().peekable();
-        let mut table_items = Vec::new();
 
-        while let Some((idx, song)) = table_iter.next() {
-            // Supply default row to skip unnecessary work for rows that are either below or
-            // above the visible portion of the table
-            if idx < offset || idx > viewport_len + offset {
-                table_items.push(Row::new((0..formats.len()).map(|_| Cell::default())));
-                continue;
-            }
+        let new_album_indices: HashSet<usize> = self
+            .queue
+            .items
+            .as_slice()
+            .to_album_ranges()
+            .map(|range| range.end.saturating_sub(1))
+            .collect();
+        let current_song_id = ctx.find_current_song_in_queue().map(|(_, song)| song.id);
+        let marked = std::mem::take(self.queue.marked_mut());
+        let filter = ctx.input.value(self.queue.filter_buffer_id);
 
-            let is_current = ctx
-                .find_current_song_in_queue()
-                .map(|(_, song)| song.id)
-                .is_some_and(|v| v == song.id);
+        let table = VirtualizedTable::new(&self.queue.items)
+            .column_widths(self.column_widths.clone())
+            .row_highlight_style(config.theme.current_item_style)
+            .map_fn(|idx, song| {
+                let is_current = current_song_id.is_some_and(|v| v == song.id);
 
-            let is_marked = self.queue.marked().contains(&idx);
-            let columns = (0..formats.len()).map(|i| {
-                let mut max_len: usize = widths[i].width.into();
-                // We have to subtract marker symbol length from max len in order to make space
-                // for the marker symbol in case we are in the first column of the table and the
-                // song is marked.
-                if is_marked && i == 0 {
-                    max_len = max_len.saturating_sub(marker_symbol_len);
-                }
+                let is_marked = marked.contains(&idx);
+                let columns = (0..formats.len()).map(|i| {
+                    let mut max_len: usize = widths[i].width.into();
+                    // We have to subtract marker symbol length from max len in order to make space
+                    // for the marker symbol in case we are in the first column of the table and the
+                    // song is marked.
+                    if is_marked && i == 0 {
+                        max_len = max_len.saturating_sub(marker_symbol_len);
+                    }
 
-                let mut line = song
-                    .as_line_ellipsized(
-                        &formats[i].prop,
-                        max_len,
-                        &config.theme.symbols,
-                        &config.theme.format_tag_separator,
-                        config.theme.multiple_tag_resolution_strategy,
-                        ctx,
-                    )
-                    .unwrap_or_default()
-                    .alignment(formats[i].alignment.into());
+                    let mut line = song
+                        .as_line_ellipsized(
+                            &formats[i].prop,
+                            max_len,
+                            &config.theme.symbols,
+                            &config.theme.format_tag_separator,
+                            config.theme.multiple_tag_resolution_strategy,
+                            ctx,
+                        )
+                        .unwrap_or_default()
+                        .alignment(formats[i].alignment.into());
 
-                if is_marked && i == 0 {
-                    let marker_span = Span::styled(
-                        &config.theme.symbols.marker,
-                        config.theme.highlighted_item_style,
-                    );
-                    line.spans.splice(..0, std::iter::once(marker_span));
-                }
+                    if is_marked && i == 0 {
+                        let marker_span = Span::styled(
+                            &config.theme.symbols.marker,
+                            config.theme.highlighted_item_style,
+                        );
+                        line.spans.splice(..0, std::iter::once(marker_span));
+                    }
 
-                line
-            });
-
-            let is_matching_search = is_current
-                || self.queue.filter().is_some_and(|filter| {
-                    song.matches(self.column_formats.as_slice(), filter, ctx)
+                    line
                 });
 
-            let mut row = QueueRow::default();
-            if is_matching_search {
-                row.cell_style = Some(config.theme.highlighted_item_style);
-            }
+                let is_matching_search = is_current
+                    || if self.queue.filter_active {
+                        song.matches(self.column_formats.as_slice(), &filter, ctx)
+                    } else {
+                        Default::default()
+                    };
 
-            if matches!(ctx.config.theme.song_table_album_separator, AlbumSeparator::Underline) {
-                let is_new_album = if let Some((_, next_song)) = table_iter.peek() {
-                    next_song.metadata.get("album") != song.metadata.get("album")
-                        || next_song.metadata.get("album_artist")
-                            != song.metadata.get("album_artist")
-                } else {
-                    false
-                };
-                row.underlined = is_new_album;
-            }
+                let mut row = QueueRow::default();
+                if is_matching_search {
+                    row.cell_style = Some(config.theme.highlighted_item_style);
+                }
 
-            table_items.push(row.into_row(columns));
-        }
+                let sep = ctx.config.theme.song_table_album_separator;
+                if new_album_indices.contains(&idx)
+                    && matches!(sep, AlbumSeparator::Underline)
+                    && idx != self.queue.items.len().saturating_sub(1)
+                {
+                    row.underlined = true;
+                }
 
-        if config.theme.show_song_table_header {
-            let header_table = Table::default()
-                .header(Row::new(self.header.iter().enumerate().map(|(idx, title)| {
-                    Line::from(title.as_str()).alignment(formats[idx].alignment.into())
-                })))
-                .style(config.as_text_style())
-                .widths(self.column_widths.clone())
-                .block(config.as_header_table_block());
+                row.into_row(columns)
+            });
 
-            frame.render_widget(header_table, self.areas[Areas::TableHeader]);
-        }
+        frame.render_widget(table_block, self.areas[Areas::Table]);
+        frame.render_stateful_widget(table, self.areas[Areas::Table], &mut self.queue.state);
 
-        let table = Table::new(table_items, self.column_widths.clone())
-            .style(config.as_text_style())
-            .row_highlight_style(config.theme.current_item_style);
-
-        frame.render_widget(table_block, self.areas[Areas::TableBlock]);
-        frame.render_stateful_widget(
-            table,
-            self.areas[Areas::Table],
-            self.queue.state.as_render_state_ref(),
-        );
+        let _ = std::mem::replace(self.queue.marked_mut(), marked);
 
         if let Some(scrollbar) = config.as_styled_scrollbar()
             && self.areas[Areas::Scrollbar].width > 0
@@ -402,7 +367,7 @@ impl Pane for QueuePane {
             && self.areas[Areas::FilterArea].height > 0
         {
             frame.render_widget(
-                Text::from(filter_text).style(
+                Line::from(filter_text).style(
                     config.theme.text_color.map(|c| Style::default().fg(c)).unwrap_or_default(),
                 ),
                 self.areas[Areas::FilterArea],
@@ -415,48 +380,27 @@ impl Pane for QueuePane {
     fn calculate_areas(&mut self, area: Rect, ctx: &Ctx) -> Result<()> {
         let Ctx { config, .. } = ctx;
 
-        let header_height: u16 = config.theme.show_song_table_header.into();
         let scrollbar_area_width: u16 = config.theme.scrollbar.is_some().into();
 
-        let [header_area, queue_area] =
-            Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)]).areas(area);
-        let [header_area, _scrollbar_placeholder] = Layout::horizontal([
+        let [table_area, scrollbar_area] = Layout::horizontal([
             Constraint::Percentage(100),
             Constraint::Length(scrollbar_area_width),
         ])
-        .areas(header_area);
-        let [table_block_area, scrollbar_area] = Layout::horizontal([
-            Constraint::Percentage(100),
-            Constraint::Length(scrollbar_area_width),
-        ])
-        .areas(queue_area);
+        .areas(area);
 
-        // Apply empty margin on left and right
-        let table_block_area = table_block_area.shrink_horizontally(1);
-        let header_area = header_area.shrink_horizontally(1);
-        // Make scrollbar not overlap header/table separator if separator is visible
-        let scrollbar_area =
-            scrollbar_area.shrink_from_top(config.theme.show_song_table_header.into());
-
-        let table_area = if config.theme.show_song_table_header {
-            table_block_area.shrink_from_top(1)
+        let mut table_area = if self.queue.filter_active {
+            self.areas[Areas::FilterArea] =
+                Rect::new(table_area.x, table_area.y, table_area.width, 1);
+            table_area.shrink_from_top(1)
         } else {
-            table_block_area
+            self.areas[Areas::FilterArea] = Rect::default();
+            table_area
         };
 
-        let table_area =
-            if self.queue.filter().is_some() && !ctx.config.theme.show_song_table_header {
-                self.areas[Areas::FilterArea] =
-                    Rect::new(table_area.x, table_area.y, table_area.width, 1);
-                table_area.shrink_from_top(1)
-            } else {
-                self.areas[Areas::FilterArea] = Rect::default();
-                table_area
-            };
+        // Create 1 column space between the table and the scrollbar
+        table_area.width = table_area.width.saturating_sub(1);
 
         self.areas[Areas::Table] = table_area;
-        self.areas[Areas::TableBlock] = table_block_area;
-        self.areas[Areas::TableHeader] = header_area;
         self.areas[Areas::Scrollbar] = scrollbar_area;
 
         Ok(())
@@ -508,6 +452,7 @@ impl Pane for QueuePane {
     fn on_event(&mut self, event: &mut UiEvent, is_visible: bool, ctx: &Ctx) -> Result<()> {
         match event {
             UiEvent::Database => {
+                self.queue.filter_active = false;
                 self.queue.items.clone_from(&ctx.queue);
                 self.queue.unmark_all();
             }
@@ -538,8 +483,7 @@ impl Pane for QueuePane {
                 self.before_show(ctx)?;
             }
             UiEvent::ConfigChanged => {
-                let (header, column_widths, column_formats) = Self::init(ctx);
-                self.header = header;
+                let (column_widths, column_formats) = Self::init(ctx);
                 self.column_formats = column_formats;
                 self.column_widths = column_widths;
             }
@@ -567,7 +511,7 @@ impl Pane for QueuePane {
         }
 
         match event.kind {
-            MouseEventKind::LeftClick => {
+            MouseEventKind::LeftClick if self.areas[Areas::Table].contains(event.into()) => {
                 let clicked_row: usize = event.y.saturating_sub(self.areas[Areas::Table].y).into();
                 if let Some(idx) = self.queue.state.get_at_rendered_row(clicked_row) {
                     self.queue.select_idx(idx, ctx.config.scrolloff);
@@ -575,7 +519,8 @@ impl Pane for QueuePane {
                     ctx.render()?;
                 }
             }
-            MouseEventKind::DoubleClick => {
+            MouseEventKind::LeftClick => {}
+            MouseEventKind::DoubleClick if self.areas[Areas::Table].contains(event.into()) => {
                 let clicked_row: usize = event.y.saturating_sub(self.areas[Areas::Table].y).into();
 
                 if let Some(song) = self
@@ -591,7 +536,8 @@ impl Pane for QueuePane {
                     });
                 }
             }
-            MouseEventKind::MiddleClick => {
+            MouseEventKind::DoubleClick => {}
+            MouseEventKind::MiddleClick if self.areas[Areas::Table].contains(event.into()) => {
                 let clicked_row: usize = event.y.saturating_sub(self.areas[Areas::Table].y).into();
 
                 if let Some(selected_song) = self
@@ -607,15 +553,18 @@ impl Pane for QueuePane {
                     });
                 }
             }
-            MouseEventKind::ScrollDown => {
-                self.queue.scroll_down(1, ctx.config.scrolloff);
+            MouseEventKind::MiddleClick => {}
+            MouseEventKind::ScrollDown if self.areas[Areas::Table].contains(event.into()) => {
+                self.queue.scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
-            MouseEventKind::ScrollUp => {
-                self.queue.scroll_up(1, ctx.config.scrolloff);
+            MouseEventKind::ScrollDown => {}
+            MouseEventKind::ScrollUp if self.areas[Areas::Table].contains(event.into()) => {
+                self.queue.scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
-            MouseEventKind::RightClick => {
+            MouseEventKind::ScrollUp => {}
+            MouseEventKind::RightClick if self.areas[Areas::Table].contains(event.into()) => {
                 let clicked_row: usize = event.y.saturating_sub(self.areas[Areas::Table].y).into();
                 if let Some(idx) = self.queue.state.get_at_rendered_row(clicked_row) {
                     self.queue.select_idx(idx, ctx.config.scrolloff);
@@ -624,6 +573,7 @@ impl Pane for QueuePane {
                 }
                 self.open_context_menu(ctx);
             }
+            MouseEventKind::RightClick => {}
             MouseEventKind::Drag { .. } => {}
         }
 
@@ -704,37 +654,28 @@ impl Pane for QueuePane {
         Ok(())
     }
 
-    fn handle_action(&mut self, event: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if self.filter_input_mode {
-            match event.as_common_action(ctx) {
-                Some(CommonAction::Confirm) => {
-                    self.filter_input_mode = false;
-
-                    ctx.render()?;
-                }
-                Some(CommonAction::Close) => {
-                    self.filter_input_mode = false;
-                    self.queue.set_filter(None, self.column_formats.as_slice(), ctx);
-
-                    ctx.render()?;
-                }
-                _ => {
-                    event.stop_propagation();
-                    match event.code() {
-                        KeyCode::Char(c) => {
-                            self.queue.push_filter(c, self.column_formats.as_slice(), ctx);
-                            self.queue.jump_first_matching(self.column_formats.as_slice(), ctx);
-                            ctx.render()?;
-                        }
-                        KeyCode::Backspace => {
-                            self.queue.pop_filter(self.column_formats.as_slice(), ctx);
-                            ctx.render()?;
-                        }
-                        _ => {}
-                    }
-                }
+    fn handle_insert_mode(&mut self, kind: InputResultEvent, ctx: &mut Ctx) -> Result<()> {
+        match kind {
+            InputResultEvent::Push => {
+                self.queue.recalculate_matched_items(self.column_formats.as_slice(), ctx);
+                self.queue.jump_first_matching(self.column_formats.as_slice(), ctx);
             }
-        } else if let Some(action) = event.as_queue_action(ctx) {
+            InputResultEvent::Pop => {
+                self.queue.recalculate_matched_items(self.column_formats.as_slice(), ctx);
+            }
+            InputResultEvent::Confirm => {}
+            InputResultEvent::Cancel => {
+                self.queue.set_filter_active(false);
+                ctx.input.clear_buffer(self.queue.filter_buffer_id);
+            }
+            InputResultEvent::NoChange => {}
+        }
+        ctx.render()?;
+        Ok(())
+    }
+
+    fn handle_action(&mut self, event: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = event.claim_queue() {
             match action {
                 QueueActions::Delete if !self.queue.marked().is_empty() => {
                     for range in self.queue.marked().ranges().rev() {
@@ -792,85 +733,16 @@ impl Pane for QueuePane {
                     if let Some((idx, _)) = ctx.status.songid.and_then(|id| {
                         self.queue.items.iter().enumerate().find(|(_, song)| song.id == id)
                     }) {
-                        self.queue.select_idx(idx, ctx.config.scrolloff);
+                        let scrolloff =
+                            if self.queue.selected_with_idx().is_some_and(|(i, _)| i == idx) {
+                                usize::MAX
+                            } else {
+                                ctx.config.scrolloff
+                            };
+                        self.queue.select_idx(idx, scrolloff);
                         ctx.render()?;
                     } else {
                         status_info!("No song is currently playing");
-                    }
-                }
-                QueueActions::Save => {
-                    modal!(
-                        ctx,
-                        InputModal::new(ctx)
-                            .title("Save queue as playlist")
-                            .confirm_label("Save")
-                            .input_label("Playlist name:")
-                            .on_confirm(move |ctx, value| {
-                                let value = value.to_owned();
-                                ctx.command(move |client| {
-                                    match client.save_queue_as_playlist(&value, None) {
-                                        Ok(()) => {
-                                            status_info!("Playlist '{}' saved", value);
-                                        }
-                                        Err(err) => {
-                                            status_error!(err:?; "Failed to save playlist '{}'",value);
-                                        }
-                                    }
-                                    Ok(())
-                                });
-                                Ok(())
-                            })
-                    );
-                }
-                QueueActions::AddToPlaylist if !self.queue.marked().is_empty() => {
-                    let mut selected_uris: Vec<String> = Vec::new();
-
-                    self.queue.marked().ranges().for_each(|r| {
-                        let sor: SingleOrRange = r.into();
-
-                        if let Some(end) = sor.end {
-                            for idx in sor.start..end {
-                                if let Some(marked_song) = self.queue.items.get(idx) {
-                                    selected_uris.push(marked_song.file.clone());
-                                }
-                            }
-                        } else if let Some(marked_song) = self.queue.items.get(sor.start) {
-                            selected_uris.push(marked_song.file.clone());
-                        }
-                    });
-
-                    ctx.query().id(ADD_TO_PLAYLIST_MULTIPLE).target(PaneType::Queue).query(
-                        move |client| {
-                            let playlists = client
-                                .list_playlists()?
-                                .into_iter()
-                                .map(|v| v.name)
-                                .sorted()
-                                .collect_vec();
-
-                            Ok(MpdQueryResult::AddToPlaylistMultiple {
-                                playlists,
-                                song_files: selected_uris,
-                            })
-                        },
-                    );
-                }
-                QueueActions::AddToPlaylist => {
-                    if let Some(selected_song) = self.queue.selected() {
-                        let uri = selected_song.file.clone();
-                        ctx.query()
-                            .id(ADD_TO_PLAYLIST)
-                            .replace_id(ADD_TO_PLAYLIST)
-                            .target(PaneType::Queue)
-                            .query(move |client| {
-                                let playlists = client
-                                    .list_playlists()?
-                                    .into_iter()
-                                    .map(|v| v.name)
-                                    .sorted()
-                                    .collect_vec();
-                                Ok(MpdQueryResult::AddToPlaylist { playlists, song_file: uri })
-                            });
                     }
                 }
                 QueueActions::Shuffle if !self.queue.marked().is_empty() => {
@@ -889,9 +761,13 @@ impl Pane for QueuePane {
                     });
                     status_info!("Shuffled the queue");
                 }
+                QueueActions::SortByColumn(idx) => {
+                    QueueHeaderPane::sort_by_column(self.column_formats.as_slice(), *idx, ctx)?;
+                    ctx.render()?;
+                }
                 QueueActions::Unused => {}
             }
-        } else if let Some(action) = event.as_common_action(ctx).map(|v| v.to_owned()) {
+        } else if let Some(action) = event.claim_common().map(|v| v.to_owned()) {
             match action {
                 CommonAction::Up => {
                     if !self.queue.is_empty() {
@@ -1068,8 +944,9 @@ impl Pane for QueuePane {
                 CommonAction::Right => {}
                 CommonAction::Left => {}
                 CommonAction::EnterSearch => {
-                    self.filter_input_mode = true;
-                    self.queue.set_filter(Some(String::new()), self.column_formats.as_slice(), ctx);
+                    ctx.input.insert_mode(self.queue.filter_buffer_id);
+                    ctx.input.clear_buffer(self.queue.filter_buffer_id);
+                    self.queue.set_filter_active(true);
 
                     ctx.render()?;
                 }
@@ -1264,7 +1141,7 @@ impl Pane for QueuePane {
                     modal!(ctx, modal);
                 }
             }
-        } else if let Some(action) = event.as_global_action(ctx) {
+        } else if let Some(action) = event.claim_global() {
             match action {
                 GlobalAction::ExternalCommand { command, .. } => {
                     let songs =
@@ -1297,7 +1174,7 @@ struct QueueRow {
 impl QueueRow {
     fn into_row<'a>(self, cells: impl Iterator<Item = Line<'a>>) -> Row<'a> {
         let mut row = if let Some(style) = self.cell_style {
-            Row::new(cells.map(|column| column.patch_style(style)))
+            Row::new(cells.map(|column| column.patch_style(style))).style(style)
         } else {
             Row::new(cells)
         };

@@ -5,19 +5,20 @@ use bon::bon;
 use ratatui::{
     Frame,
     layout::Rect,
+    macros::constraint,
     prelude::{Constraint, Layout},
     style::{Style, Stylize},
     symbols,
     widgets::{Block, Borders, Clear, List, ListState},
 };
 
-use super::{BUTTON_GROUP_SYMBOLS, Modal, RectExt};
+use super::{BUTTON_GROUP_SYMBOLS, Modal};
 use crate::{
     config::keys::CommonAction,
     ctx::Ctx,
     shared::{
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     ui::{
@@ -98,7 +99,7 @@ impl<V: Display + std::fmt::Debug, Callback: FnOnce(&Ctx, V, usize) -> Result<()
     }
 
     fn render(&mut self, frame: &mut Frame, ctx: &mut Ctx) -> Result<()> {
-        let popup_area = frame.area().centered_exact(80, 15);
+        let popup_area = frame.area().centered(constraint!(==80), constraint!(==15));
         frame.render_widget(Clear, popup_area);
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
             frame.render_widget(Block::default().style(Style::default().bg(bg_color)), popup_area);
@@ -156,8 +157,8 @@ impl<V: Display + std::fmt::Debug, Callback: FnOnce(&Ctx, V, usize) -> Result<()
         Ok(())
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if let Some(action) = key.as_common_action(ctx) {
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = key.claim_common() {
             match action {
                 CommonAction::Down => {
                     match self.focused {
@@ -296,12 +297,12 @@ impl<V: Display + std::fmt::Debug, Callback: FnOnce(&Ctx, V, usize) -> Result<()
             }
             MouseEventKind::ScrollUp if self.options_area.contains(event.into()) => {
                 self.focused = FocusedComponent::List;
-                self.scrolling_state.scroll_up(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::ScrollDown if self.options_area.contains(event.into()) => {
                 self.focused = FocusedComponent::List;
-                self.scrolling_state.scroll_down(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::ScrollDown => {}

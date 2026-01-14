@@ -8,7 +8,7 @@ use super::ToDescription;
 use crate::{
     config::{tabs::TabName, utils::tilde_expand},
     mpd::{QueuePosition, commands::Song},
-    shared::macros::status_warn,
+    shared::{macros::status_warn, song_ext::SongsExt},
 };
 
 // Global actions
@@ -21,6 +21,7 @@ pub enum GlobalAction {
     ShowCurrentSongInfo,
     ShowOutputs,
     ShowDecoders,
+    ShowDownloads,
     #[strum(to_string = "Partition({name:?})")]
     Partition {
         name: Option<String>,
@@ -68,6 +69,7 @@ pub enum GlobalActionFile {
     ShowCurrentSongInfo,
     ShowOutputs,
     ShowDecoders,
+    ShowDownloads,
     Partition {
         #[serde(default)]
         name: Option<String>,
@@ -121,6 +123,7 @@ impl From<GlobalActionFile> for GlobalAction {
             GlobalActionFile::ShowOutputs => GlobalAction::ShowOutputs,
             GlobalActionFile::ShowDecoders => GlobalAction::ShowDecoders,
             GlobalActionFile::ShowCurrentSongInfo => GlobalAction::ShowCurrentSongInfo,
+            GlobalActionFile::ShowDownloads => GlobalAction::ShowDownloads,
             GlobalActionFile::CommandMode => GlobalAction::CommandMode,
             GlobalActionFile::Command { command, description } => {
                 GlobalAction::Command { command, description }
@@ -179,6 +182,7 @@ impl ToDescription for GlobalAction {
             GlobalAction::ShowCurrentSongInfo => {
                 "Show metadata of the currently playing song in a modal popup".into()
             }
+            GlobalAction::ShowDownloads => "Show current downloads".into(),
             GlobalAction::ToggleRepeat => "Toggle repeat".into(),
             GlobalAction::ToggleSingle => {
                 "Whether to stop playing after single track or repeat track/playlist when repeat is on".into()
@@ -324,10 +328,13 @@ pub enum QueueActionsFile {
     Play,
     #[deprecated]
     Save,
+    #[deprecated]
     AddToPlaylist,
+    #[deprecated]
     ShowInfo,
     JumpToCurrent,
     Shuffle,
+    SortByColumn(usize),
 }
 
 #[derive(Debug, Display, Clone, Copy, EnumDiscriminants, PartialEq, Eq)]
@@ -336,25 +343,33 @@ pub enum QueueActions {
     Delete,
     DeleteAll,
     Play,
-    #[deprecated]
-    Save,
-    AddToPlaylist,
     JumpToCurrent,
     Shuffle,
     Unused,
+    SortByColumn(usize),
 }
 
-impl From<QueueActionsFile> for QueueActions {
-    fn from(value: QueueActionsFile) -> Self {
+impl TryFrom<QueueActionsFile> for QueueActions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: QueueActionsFile) -> Result<Self, Self::Error> {
         match value {
-            QueueActionsFile::Delete => QueueActions::Delete,
-            QueueActionsFile::DeleteAll => QueueActions::DeleteAll,
-            QueueActionsFile::Play => QueueActions::Play,
-            QueueActionsFile::Save => QueueActions::Save,
-            QueueActionsFile::AddToPlaylist => QueueActions::AddToPlaylist,
-            QueueActionsFile::ShowInfo => QueueActions::Unused,
-            QueueActionsFile::JumpToCurrent => QueueActions::JumpToCurrent,
-            QueueActionsFile::Shuffle => QueueActions::Shuffle,
+            QueueActionsFile::Delete => Ok(QueueActions::Delete),
+            QueueActionsFile::DeleteAll => Ok(QueueActions::DeleteAll),
+            QueueActionsFile::Play => Ok(QueueActions::Play),
+            QueueActionsFile::Save => Ok(QueueActions::Unused),
+            QueueActionsFile::AddToPlaylist => Ok(QueueActions::Unused),
+            QueueActionsFile::ShowInfo => Ok(QueueActions::Unused),
+            QueueActionsFile::JumpToCurrent => Ok(QueueActions::JumpToCurrent),
+            QueueActionsFile::Shuffle => Ok(QueueActions::Shuffle),
+            QueueActionsFile::SortByColumn(idx) => {
+                let idx = idx.checked_sub(1);
+                let idx = idx.ok_or_else(|| {
+                    anyhow::anyhow!("Column index for SortByColumn must be 1 or higher")
+                })?;
+
+                Ok(QueueActions::SortByColumn(idx))
+            }
         }
     }
 }
@@ -362,18 +377,18 @@ impl From<QueueActionsFile> for QueueActions {
 impl ToDescription for QueueActions {
     fn to_description(&self) -> Cow<'static, str> {
         match self {
-            QueueActions::Delete => "Remove song under curor from the queue",
-            QueueActions::DeleteAll => "Clear current queue",
-            QueueActions::Play => "Play song under cursor",
-            QueueActions::Save => "Save current queue as a new playlist",
-            QueueActions::AddToPlaylist => "Add song under cursor to an existing playlist",
-            QueueActions::Unused => "unused",
+            QueueActions::Delete => "Remove song under cursor from the queue".into(),
+            QueueActions::DeleteAll => "Clear current queue".into(),
+            QueueActions::Play => "Play song under cursor".into(),
+            QueueActions::Unused => "unused".into(),
             QueueActions::JumpToCurrent => {
-                "Moves the cursor in Queue table to the currently playing song"
+                "Moves the cursor in Queue table to the currently playing song".into()
             }
-            QueueActions::Shuffle => "Shuffles the current queue",
+            QueueActions::Shuffle => "Shuffles the current queue".into(),
+            QueueActions::SortByColumn(idx) => {
+                format!("Sort the queue by the {idx}. column").into()
+            }
         }
-        .into()
     }
 }
 
@@ -490,30 +505,11 @@ impl AddOpts {
         current_song_idx: Option<usize>,
         hovered_song_idx: Option<usize>,
     ) -> anyhow::Result<(Option<usize>, Option<QueuePosition>)> {
-        let ranges = Self::to_album_ranges(queue);
+        let ranges = queue.to_album_ranges().collect_vec();
         Ok((
             self.autoplay_idx(queue, current_song_idx, hovered_song_idx, &ranges)?,
             self.queue_position(current_song_idx, &ranges)?,
         ))
-    }
-
-    fn to_album_ranges(queue: &[Song]) -> Vec<Range<usize>> {
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < queue.len() {
-            let a = queue[i].metadata.get("album");
-            let aa = queue[i].metadata.get("album_artist");
-            let mut j = i + 1;
-            while j < queue.len()
-                && queue[j].metadata.get("album") == a
-                && queue[j].metadata.get("album_artist") == aa
-            {
-                j += 1;
-            }
-            out.push(i..j);
-            i = j;
-        }
-        out
     }
 
     fn queue_position(

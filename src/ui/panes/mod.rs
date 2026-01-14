@@ -38,7 +38,6 @@ use super::{
 use crate::{
     MpdQueryResult,
     config::{
-        keys::CommonAction,
         tabs::{Pane as ConfigPane, PaneType, SizedPaneOrSplit},
         theme::{
             SymbolsConfig,
@@ -61,8 +60,13 @@ use crate::{
     },
     shared::{
         ext::{duration::DurationExt, num::NumExt, span::SpanExt},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::MouseEvent,
+    },
+    ui::{
+        input::InputResultEvent,
+        panes::queue_header::QueueHeaderPane,
+        widgets::header::PropertyTemplates,
     },
 };
 
@@ -80,6 +84,7 @@ pub mod playlists;
 pub mod progress_bar;
 pub mod property;
 pub mod queue;
+pub mod queue_header;
 pub mod search;
 pub mod tabs;
 pub mod tag_browser;
@@ -88,6 +93,7 @@ pub mod volume;
 #[derive(Debug, Display, strum::EnumDiscriminants)]
 pub enum Panes<'pane_ref, 'pane> {
     Queue(&'pane_ref mut QueuePane),
+    QueueHeader(&'pane_ref mut QueueHeaderPane),
     #[cfg(debug_assertions)]
     Logs(&'pane_ref mut LogsPane),
     Directories(&'pane_ref mut DirectoriesPane),
@@ -116,6 +122,7 @@ impl<P: Pane + std::fmt::Debug> BoxedPane for P {}
 #[derive(Debug)]
 pub struct PaneContainer<'panes> {
     pub queue: QueuePane,
+    pub queue_header: QueueHeaderPane,
     #[cfg(debug_assertions)]
     pub logs: LogsPane,
     pub directories: DirectoriesPane,
@@ -139,6 +146,7 @@ impl<'panes> PaneContainer<'panes> {
     pub fn new(ctx: &Ctx) -> Result<Self> {
         Ok(Self {
             queue: QueuePane::new(ctx),
+            queue_header: QueueHeaderPane::new(ctx),
             #[cfg(debug_assertions)]
             logs: LogsPane::new(),
             directories: DirectoriesPane::new(ctx),
@@ -193,6 +201,7 @@ impl<'panes> PaneContainer<'panes> {
     ) -> Result<Panes<'pane_ref, 'panes>> {
         match pane {
             PaneType::Queue => Ok(Panes::Queue(&mut self.queue)),
+            PaneType::QueueHeader() => Ok(Panes::QueueHeader(&mut self.queue_header)),
             #[cfg(debug_assertions)]
             PaneType::Logs => Ok(Panes::Logs(&mut self.logs)),
             PaneType::Directories => Ok(Panes::Directories(&mut self.directories)),
@@ -231,6 +240,7 @@ macro_rules! pane_call {
     ($screen:ident, $fn:ident($($param:expr),+)) => {
         match &mut $screen {
             Panes::Queue(s) => s.$fn($($param),+),
+            Panes::QueueHeader(s) => s.$fn($($param),+),
             #[cfg(debug_assertions)]
             Panes::Logs(s) => s.$fn($($param),+),
             Panes::Directories(s) => s.$fn($($param),+),
@@ -274,7 +284,11 @@ pub(crate) trait Pane {
         Ok(())
     }
 
-    fn handle_action(&mut self, event: &mut KeyEvent, ctx: &mut Ctx) -> Result<()>;
+    fn handle_insert_mode(&mut self, kind: InputResultEvent, ctx: &mut Ctx) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_action(&mut self, event: &mut ActionEvent, ctx: &mut Ctx) -> Result<()>;
 
     fn handle_mouse_event(&mut self, event: MouseEvent, ctx: &Ctx) -> Result<()> {
         Ok(())
@@ -521,6 +535,11 @@ impl Song {
                         .map_or_else(|_| v.last().to_owned(), |v| format!("{v:0>2}")),
                 )
             }),
+            SongProperty::SampleRate() => self.samplerate().map(|v| Cow::Owned(v.to_string())),
+            SongProperty::Bits() => self.bits().map(|v| Cow::Owned(v.to_string())),
+            SongProperty::Channels() => self.channels().map(|v| Cow::Owned(v.to_string())),
+            SongProperty::Added() => self.added.map(|d| Cow::Owned(d.to_string())),
+            SongProperty::LastModified() => Some(Cow::Owned(self.last_modified.to_string())),
         }
     }
 
@@ -843,7 +862,7 @@ impl Property<SongProperty> {
 }
 
 impl Property<PropertyKind> {
-    fn default_as_span<'song: 's, 'stickers: 'song, 's>(
+    fn default_as_span<'song: 's, 's>(
         &'s self,
         song: Option<&'song Song>,
         ctx: &'song Ctx,
@@ -853,7 +872,7 @@ impl Property<PropertyKind> {
         self.default.as_ref().and_then(|p| p.as_span(song, ctx, tag_separator, strategy))
     }
 
-    pub fn as_span<'song: 's, 'stickers: 'song, 's>(
+    pub fn as_span<'song: 's, 's>(
         &'s self,
         song: Option<&'song Song>,
         ctx: &'song Ctx,
@@ -983,10 +1002,9 @@ impl Property<PropertyKind> {
                     )))
                 }
                 StatusProperty::QueueTimeTotal { separator } => {
-                    let sum: Duration = ctx.queue.iter().filter_map(|s| s.duration).sum();
                     let formatted = match separator {
-                        Some(sep) => sum.format_to_duration(sep),
-                        None => sum.to_string(),
+                        Some(sep) => ctx.cached_queue_time_total.format_to_duration(sep),
+                        None => ctx.cached_queue_time_total.to_string(),
                     };
                     Some(Either::Left(Span::styled(formatted, style)))
                 }
@@ -1016,6 +1034,18 @@ impl Property<PropertyKind> {
                 StatusProperty::ActiveTab => {
                     Some(Either::Left(Span::styled(ctx.active_tab.0.as_ref(), style)))
                 }
+                StatusProperty::InputBuffer() => {
+                    Some(Either::Left(Span::styled(ctx.key_resolver.buffer_to_string(), style)))
+                }
+                StatusProperty::SampleRate() => {
+                    status.samplerate().map(|v| Either::Left(Span::styled(v.to_string(), style)))
+                }
+                StatusProperty::Bits() => {
+                    status.bits().map(|v| Either::Left(Span::styled(v.to_string(), style)))
+                }
+                StatusProperty::Channels() => {
+                    status.channels().map(|v| Either::Left(Span::styled(v.to_string(), style)))
+                }
             },
             PropertyKindOrText::Property(PropertyKind::Widget(w)) => match w {
                 WidgetProperty::Volume => {
@@ -1041,15 +1071,18 @@ impl Property<PropertyKind> {
                         },
                     ]))
                 }
-                WidgetProperty::ScanStatus => ctx.db_update_start.map(|update_start| {
-                    Either::Left(Span::styled(
-                        ScanStatus::new(Some(update_start))
-                            .get_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        style,
-                    ))
-                }),
+                WidgetProperty::ScanStatus => ctx
+                    .db_update_start
+                    .map(|update_start| {
+                        Either::Left(Span::styled(
+                            ScanStatus::new(Some(update_start))
+                                .get_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                            style,
+                        ))
+                    })
+                    .or_else(|| self.default_as_span(song, ctx, tag_separator, strategy)),
             },
             PropertyKindOrText::Group(group) => {
                 let mut buf = Vec::new();
@@ -1134,6 +1167,7 @@ impl SizedPaneOrSplit {
         &self,
         area: Rect,
         pane_callback: &mut impl FnMut(&ConfigPane, Rect, Block, Rect) -> Result<()>,
+        ctx: &Ctx,
     ) -> Result<()> {
         self.for_each_pane_custom_data(
             area,
@@ -1143,6 +1177,7 @@ impl SizedPaneOrSplit {
                 Ok(())
             },
             &mut |_, _, ()| Ok(()),
+            ctx,
         )
     }
 
@@ -1152,33 +1187,73 @@ impl SizedPaneOrSplit {
         mut custom_data: T,
         pane_callback: &mut impl FnMut(&ConfigPane, Rect, Block, Rect, &mut T) -> Result<()>,
         split_callback: &mut impl FnMut(Block, Rect, &mut T) -> Result<()>,
+        ctx: &Ctx,
     ) -> Result<()> {
         let mut stack = vec![(self, area)];
 
+        let song = ctx.find_current_song_in_queue().map(|(_, song)| song);
         while let Some((configured_panes, area)) = stack.pop() {
             match configured_panes {
                 SizedPaneOrSplit::Pane(pane) => {
-                    let block = Block::default().borders(pane.borders);
-                    let pane_area = block.inner(area);
+                    let mut block = Block::default()
+                        .borders(pane.borders)
+                        .border_set((&pane.border_symbols).into());
+                    if pane.border_title.is_empty() {
+                        let pane_area = block.inner(area);
+                        pane_callback(pane, pane_area, block, area, &mut custom_data)?;
+                    } else {
+                        let templs = PropertyTemplates::new(&pane.border_title);
+                        let title = templs.format(song, ctx, &ctx.config);
 
-                    pane_callback(pane, pane_area, block, area, &mut custom_data)?;
+                        block = block
+                            .title(title)
+                            .title_position(pane.border_title_position)
+                            .title_alignment(pane.border_title_alignment);
+
+                        let pane_area = block.inner(area);
+                        pane_callback(pane, pane_area, block, area, &mut custom_data)?;
+                    }
                 }
-                SizedPaneOrSplit::Split { direction, panes, borders } => {
+                SizedPaneOrSplit::Split {
+                    direction,
+                    panes,
+                    borders,
+                    border_title,
+                    border_title_position,
+                    border_title_alignment,
+                    border_symbols,
+                } => {
                     let parent_other_size = match direction {
                         ratatui::layout::Direction::Horizontal => area.height,
                         ratatui::layout::Direction::Vertical => area.width,
                     };
                     let constraints =
                         panes.iter().map(|pane| pane.size.into_constraint(parent_other_size));
-                    let block = Block::default().borders(*borders);
-                    let pane_areas = block.inner(area);
-                    let areas = Layout::new(*direction, constraints).split(pane_areas);
+                    let mut block =
+                        Block::default().borders(*borders).border_set(border_symbols.into());
 
-                    split_callback(block, area, &mut custom_data)?;
+                    if border_title.is_empty() {
+                        let pane_areas = block.inner(area);
+                        let areas = Layout::new(*direction, constraints).split(pane_areas);
+                        split_callback(block, area, &mut custom_data)?;
+                        stack.extend(
+                            areas.iter().enumerate().map(|(idx, area)| (&panes[idx].pane, *area)),
+                        );
+                    } else {
+                        let templs = PropertyTemplates::new(border_title);
+                        let title = templs.format(song, ctx, &ctx.config);
+                        block = block
+                            .title(title)
+                            .title_position(*border_title_position)
+                            .title_alignment(*border_title_alignment);
 
-                    stack.extend(
-                        areas.iter().enumerate().map(|(idx, area)| (&panes[idx].pane, *area)),
-                    );
+                        let pane_areas = block.inner(area);
+                        let areas = Layout::new(*direction, constraints).split(pane_areas);
+                        split_callback(block, area, &mut custom_data)?;
+                        stack.extend(
+                            areas.iter().enumerate().map(|(idx, area)| (&panes[idx].pane, *area)),
+                        );
+                    }
                 }
             }
         }
@@ -1245,10 +1320,7 @@ mod format_tests {
     use std::{collections::HashMap, time::Duration};
 
     use either::Either;
-    use ratatui::{
-        style::{Style, Stylize},
-        text::Span,
-    };
+    use ratatui::{style::Style, text::Span};
     use rstest::rstest;
 
     use crate::{
@@ -1886,6 +1958,8 @@ mod format_tests {
                 songid: Some(0),
                 ..Default::default()
             };
+            ctx.cached_queue_time_total =
+                ctx.queue.iter().map(|s| s.duration.unwrap_or_default()).sum();
 
             let result = format.as_span(Some(&current_song), &ctx, "", TagResolutionStrategy::All);
 

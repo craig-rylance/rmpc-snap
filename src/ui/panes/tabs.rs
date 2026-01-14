@@ -7,7 +7,7 @@ use crate::{
     ctx::Ctx,
     shared::{
         events::AppEvent,
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     ui::{UiAppEvent, UiEvent, widgets::tabs::Tabs},
@@ -44,7 +44,6 @@ impl TabsPane<'_> {
     fn init_tabs<'a>(tab_names: Vec<String>, ctx: &Ctx) -> Tabs<'a> {
         Tabs::new(tab_names)
             .divider("")
-            .block(ctx.config.as_tabs_block())
             .style(ctx.config.theme.tab_bar.inactive_style)
             .alignment(ratatui::prelude::Alignment::Center)
             .highlight_style(ctx.config.theme.tab_bar.active_style)
@@ -128,7 +127,7 @@ impl Pane for TabsPane<'_> {
         Ok(())
     }
 
-    fn handle_action(&mut self, _event: &mut KeyEvent, _ctx: &mut Ctx) -> Result<()> {
+    fn handle_action(&mut self, _event: &mut ActionEvent, _ctx: &mut Ctx) -> Result<()> {
         Ok(())
     }
 }

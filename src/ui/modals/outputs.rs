@@ -1,12 +1,13 @@
 use anyhow::Result;
 use ratatui::{
     layout::{Constraint, Margin, Rect},
+    macros::constraint,
     style::Style,
     symbols::border,
     widgets::{Block, Borders, Cell, Clear, Row, Table, TableState},
 };
 
-use super::{Modal, RectExt};
+use super::Modal;
 use crate::{
     MpdQueryResult,
     config::keys::CommonAction,
@@ -14,7 +15,7 @@ use crate::{
     mpd::mpd_client::MpdClient,
     shared::{
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
         mpd_client_ext::{MpdClientExt, PartitionedOutput, PartitionedOutputKind},
     },
@@ -90,7 +91,7 @@ impl Modal for OutputsModal {
     }
 
     fn render(&mut self, frame: &mut ratatui::Frame, ctx: &mut Ctx) -> anyhow::Result<()> {
-        let popup_area = frame.area().centered_exact(70, 10);
+        let popup_area = frame.area().centered(constraint!(==70), constraint!(==10));
         frame.render_widget(Clear, popup_area);
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
             frame.render_widget(Block::default().style(Style::default().bg(bg_color)), popup_area);
@@ -174,8 +175,8 @@ impl Modal for OutputsModal {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if let Some(action) = key.as_common_action(ctx) {
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = key.claim_common() {
             match action {
                 CommonAction::DownHalf => {
                     self.scrolling_state.next_half_viewport(ctx.config.scrolloff);
@@ -236,11 +237,11 @@ impl Modal for OutputsModal {
             MouseEventKind::MiddleClick => {}
             MouseEventKind::RightClick => {}
             MouseEventKind::ScrollDown if self.outputs_table_area.contains(event.into()) => {
-                self.scrolling_state.scroll_down(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::ScrollUp if self.outputs_table_area.contains(event.into()) => {
-                self.scrolling_state.scroll_up(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::LeftClick => {}

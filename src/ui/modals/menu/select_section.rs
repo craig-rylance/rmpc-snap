@@ -19,7 +19,7 @@ pub struct SelectSection {
     #[debug(skip)]
     pub on_confirm: Option<Box<dyn FnOnce(&Ctx, String) -> Result<()> + Send + Sync + 'static>>,
     max_height: Option<usize>,
-    state: DirState<ListState>,
+    pub state: DirState<ListState>,
 }
 
 #[derive(Copy, Clone, Debug, Enum, Eq, PartialEq, Hash)]
@@ -116,7 +116,7 @@ impl Section for SelectSection {
         self.state.select(Some(idx), 0);
     }
 
-    fn unselect(&mut self) {
+    fn unselect(&mut self, _ctx: &Ctx) {
         let offset = self.state.offset();
         self.state.inner.select(None);
         self.state.set_offset(offset);
@@ -128,7 +128,7 @@ impl Section for SelectSection {
         {
             (cb)(ctx, std::mem::take(&mut self.items[selected_idx].value))?;
         }
-        Ok(false)
+        Ok(true)
     }
 
     fn len(&self) -> usize {
@@ -188,7 +188,7 @@ impl Section for SelectSection {
         }
     }
 
-    fn left_click(&mut self, position: Position) {
+    fn left_click(&mut self, position: Position, _ctx: &Ctx) {
         self.select_item_at_position(position);
     }
 

@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     ops::Sub,
+    path::PathBuf,
     sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
@@ -10,11 +11,7 @@ use ratatui::{Terminal, layout::Rect, prelude::Backend};
 
 use super::command::{create_env, run_external};
 use crate::{
-    WorkRequest,
-    config::{
-        Config,
-        cli::{Command, RemoteCommandQuery},
-    },
+    config::{Config, cli::RemoteCommandQuery},
     ctx::Ctx,
     mpd::{
         commands::{IdleEvent, State},
@@ -24,7 +21,8 @@ use crate::{
         events::{AppEvent, WorkDone},
         ext::error::ErrorExt,
         id::{self, Id},
-        macros::{status_error, status_warn},
+        keys::KeyResolver,
+        macros::{modal, status_error, status_warn},
         mpd_client_ext::MpdClientExt,
         mpd_query::{
             EXTERNAL_COMMAND,
@@ -42,7 +40,7 @@ use crate::{
         Ui,
         UiAppEvent,
         UiEvent,
-        modals::{info_modal::InfoModal, select_modal::SelectModal},
+        modals::{downloads::DownloadsModal, info_modal::InfoModal, select_modal::SelectModal},
     },
 };
 
@@ -98,6 +96,18 @@ fn main_task<B: Backend + std::io::Write>(
         run_external(command.clone(), env);
     }
 
+    // Listen to changes to lyrics when enabled
+    let mut lyrics_watcher = if ctx.config.enable_lyrics_hot_reload
+        && ctx.config.enable_lyrics_index
+        && let Some(lyrics_dir) = &ctx.config.lyrics_dir
+    {
+        let lyrics_dir = PathBuf::from(lyrics_dir);
+        let request_tx = ctx.work_sender.clone();
+        Some(crate::core::lyrics_watcher::init(&lyrics_dir, request_tx))
+    } else {
+        None
+    };
+
     match ctx.status.state {
         State::Play => {
             // Start update loop since a song is playing on startup
@@ -152,6 +162,25 @@ fn main_task<B: Backend + std::io::Write>(
                     let max_fps = f64::from(ctx.config.max_fps);
                     min_frame_duration = Duration::from_secs_f64(1f64 / max_fps);
 
+                    // Update lyrics watcher as needed
+                    if ctx.config.enable_lyrics_hot_reload != lyrics_watcher.is_some()
+                        && ctx.config.enable_lyrics_index
+                    {
+                        // IIFE may be better expressed with try blocks when it becomes stable
+                        lyrics_watcher = (|| {
+                            if !ctx.config.enable_lyrics_hot_reload {
+                                return None;
+                            }
+
+                            let lyrics_dir = PathBuf::from(ctx.config.lyrics_dir.as_ref()?);
+                            let request_tx = ctx.work_sender.clone();
+                            Some(crate::core::lyrics_watcher::init(&lyrics_dir, request_tx))
+                        })();
+                    }
+
+                    // Update keybinds
+                    ctx.key_resolver = KeyResolver::new(&ctx.config);
+
                     if let Err(err) = ui.on_event(UiEvent::ConfigChanged, &mut ctx) {
                         log::error!(error:? = err; "UI failed to handle config changed event");
                         continue;
@@ -173,6 +202,19 @@ fn main_task<B: Backend + std::io::Write>(
                         status_error!(error:? = err; "Cannot change theme, invalid config: '{err}'");
                         continue;
                     }
+
+                    config.tabs = match config
+                        .original_tabs_definition
+                        .clone()
+                        .convert(&config.theme.components, &config.theme.border_symbol_sets)
+                    {
+                        Ok(v) => v,
+                        Err(err) => {
+                            status_error!(error:? = err; "Cannot change theme, failed to convert tabs: '{err}'");
+                            continue;
+                        }
+                    };
+
                     config.active_panes =
                         Config::calc_active_panes(&config.tabs.tabs, &config.theme.layout);
                     ctx.config = Arc::new(config);
@@ -189,19 +231,10 @@ fn main_task<B: Backend + std::io::Write>(
                     }
                     render_wanted = true;
                 }
-                AppEvent::UserKeyInput(key) => match ui.handle_key(&mut key.into(), &mut ctx) {
-                    Ok(KeyHandleResult::None) => continue,
-                    Ok(KeyHandleResult::Quit) => {
-                        if let Err(err) = ui.on_event(UiEvent::Exit, &mut ctx) {
-                            log::error!(error:? = err, event:?; "UI failed to handle quit event");
-                        }
-                        break;
-                    }
-                    Err(err) => {
-                        status_error!(err:?; "Error: {}", err.to_status());
-                        render_wanted = true;
-                    }
-                },
+                AppEvent::UserKeyInput(key) => {
+                    ctx.key_resolver.handle_key_event(key.into(), &ctx);
+                    render_wanted = true;
+                }
                 AppEvent::UserMouseInput(ev) => match ui.handle_mouse_event(ev, &mut ctx) {
                     Ok(()) => {}
                     Err(err) => {
@@ -209,6 +242,32 @@ fn main_task<B: Backend + std::io::Write>(
                         render_wanted = true;
                     }
                 },
+                AppEvent::ActionResolved(mut action) => {
+                    match ui.handle_action(&mut action, &mut ctx) {
+                        Ok(KeyHandleResult::None) => continue,
+                        Ok(KeyHandleResult::Quit) => {
+                            if let Err(err) = ui.on_event(UiEvent::Exit, &mut ctx) {
+                                log::error!(error:? = err; "UI failed to handle quit event");
+                            }
+                            break;
+                        }
+                        Err(err) => {
+                            status_error!(err:?; "Error: {}", err.to_status());
+                            render_wanted = true;
+                        }
+                    }
+                }
+                AppEvent::InsertModeFlush((mut action, buf)) => {
+                    if let Err(err) = ui.handle_insert_mode(action.as_mut(), &buf, &mut ctx) {
+                        log::error!(error:? = err, action:?, buf:?; "UI failed to handle insert mode flush");
+                    }
+                    render_wanted = true;
+                }
+                AppEvent::KeyTimeout => {
+                    log::debug!("Key timeout reached, handling queued keys");
+                    ctx.key_resolver.handle_timeout(&ctx);
+                    render_wanted = true;
+                }
                 AppEvent::Status(mut message, level, timeout) => {
                     ctx.messages.push(StatusMessage {
                         level,
@@ -257,33 +316,82 @@ fn main_task<B: Backend + std::io::Write>(
                     render_wanted = true;
                 }
                 AppEvent::WorkDone(Ok(result)) => match result {
-                    WorkDone::SearchYtResults { mut items, position } => {
-                        let labels: Vec<String> = items
-                            .iter()
-                            .map(|it| it.title.as_deref().unwrap_or("<no title>").to_string())
-                            .collect();
-
-                        let modal = SelectModal::builder()
-                            .ctx(&ctx)
-                            .title("Search results")
-                            .confirm_label("Select")
-                            .options(labels)
-                            .on_confirm(move |ctx, _label, idx| {
-                                let url = std::mem::take(&mut items[idx].url);
-                                if let Err(e) = ctx
-                                    .work_sender
-                                    .send(WorkRequest::Command(Command::AddYt { url, position }))
-                                {
-                                    log::error!("Failed to send enqueue command: {e}");
+                    WorkDone::YtDlpPlaylistResolved { urls } => {
+                        ctx.ytdlp_manager.queue_download_many(urls);
+                        ctx.ytdlp_manager.download_next();
+                    }
+                    WorkDone::YtDlpDownloaded { id, result } => {
+                        match ctx.ytdlp_manager.resolve_download(id, result) {
+                            Ok((path, position)) => {
+                                let cache_dir = ctx.config.cache_dir.clone();
+                                ctx.command(move |client| {
+                                    client.add_downloaded_file_to_queue(
+                                        path,
+                                        cache_dir.as_deref(),
+                                        position,
+                                    )?;
+                                    Ok(())
+                                });
+                            }
+                            Err(err) => {
+                                status_error!("Yt-dlp resulted in error: {err}");
+                            }
+                        }
+                        ctx.ytdlp_manager.download_next();
+                        if let Err(err) = ui.on_event(UiEvent::DownloadsUpdated, &mut ctx) {
+                            log::error!(error:? = err; "UI failed to handle DownloadsUpdated event");
+                        }
+                    }
+                    WorkDone::SearchYtResults { items, position, interactive } => {
+                        if items.is_empty() {
+                            status_warn!("No results found");
+                        } else if !interactive {
+                            let result = ctx.ytdlp_manager.download_url(&items[0].url, position);
+                            match result {
+                                Ok(()) => {
+                                    if ctx.config.auto_open_downloads {
+                                        modal!(ctx, DownloadsModal::new(&ctx));
+                                    }
                                 }
-                                Ok(())
-                            })
-                            .build();
+                                Err(err) => {
+                                    status_error!("Failed to download first search result: {err}");
+                                }
+                            }
+                        } else {
+                            let labels: Vec<String> = items
+                                .iter()
+                                .map(|it| it.title.as_deref().unwrap_or("<no title>").to_string())
+                                .collect();
 
-                        if let Err(err) =
-                            ui.on_ui_app_event(UiAppEvent::Modal(Box::new(modal)), &mut ctx)
-                        {
-                            log::error!(error:? = err; "UI failed to handle modal event");
+                            let modal = SelectModal::builder()
+                                .ctx(&ctx)
+                                .title("Search results")
+                                .confirm_label("Select")
+                                .options(labels)
+                                .on_confirm(move |ctx, _label, idx| {
+                                    let result =
+                                        ctx.ytdlp_manager.download_url(&items[idx].url, position);
+                                    match result {
+                                        Ok(()) => {
+                                            if ctx.config.auto_open_downloads {
+                                                modal!(ctx, DownloadsModal::new(ctx));
+                                            }
+                                        }
+                                        Err(err) => {
+                                            status_error!(
+                                                "Failed to download selected item: {err}"
+                                            );
+                                        }
+                                    }
+                                    Ok(())
+                                })
+                                .build();
+
+                            if let Err(err) =
+                                ui.on_ui_app_event(UiAppEvent::Modal(Box::new(modal)), &mut ctx)
+                            {
+                                log::error!(error:? = err; "UI failed to handle modal event");
+                            }
                         }
 
                         render_wanted = true;
@@ -304,9 +412,9 @@ fn main_task<B: Backend + std::io::Write>(
                             log::error!(error:? = err; "UI failed to handle lyrics indexed event");
                         }
                     }
-                    WorkDone::SingleLrcIndexed { lrc_entry } => {
-                        if let Some(lrc_entry) = lrc_entry {
-                            ctx.lrc_index.add(lrc_entry);
+                    WorkDone::SingleLrcIndexed { path, metadata } => {
+                        if let Some(metadata) = metadata {
+                            ctx.lrc_index.add(path, metadata);
                         }
                         if let Err(err) = ui.on_event(UiEvent::LyricsIndexed, &mut ctx) {
                             log::error!(error:? = err; "UI failed to handle single lyrics indexed event");
@@ -353,7 +461,7 @@ fn main_task<B: Backend + std::io::Write>(
 
                             let mut start_render_loop = || {
                                 _update_db_loop_guard = Some(ctx.scheduler.repeated(
-                                    Duration::from_secs(1),
+                                    Duration::from_millis(250),
                                     |(tx, _)| {
                                         tx.send(AppEvent::RequestRender)?;
                                         Ok(())
@@ -420,17 +528,9 @@ fn main_task<B: Backend + std::io::Write>(
                                     let mut env = create_env(&ctx, std::iter::empty());
 
                                     let prev_song_file = (previous_status.state != State::Stop)
-                                        .then_some(
-                                            previous_status
-                                                .songid
-                                                .and_then(|id| {
-                                                    ctx.queue
-                                                        .iter()
-                                                        .enumerate()
-                                                        .find(|(_, song)| song.id == id)
-                                                })
-                                                .map(|(_, s)| s.file.clone()),
-                                        )
+                                        .then_some(previous_status.song.and_then(|idx| {
+                                            ctx.queue.get(idx).map(|song| song.file.clone())
+                                        }))
                                         .flatten();
 
                                     if let (Some(prev_song), Some(played)) =
@@ -457,12 +557,14 @@ fn main_task<B: Backend + std::io::Write>(
                             ctx.last_status_update = Instant::now();
                             render_wanted = true;
                         }
-                        ("global_volume_update", None, MpdQueryResult::Volume(volume)) => {
+                        (GLOBAL_VOLUME_UPDATE, None, MpdQueryResult::Volume(volume)) => {
                             ctx.status.volume = volume;
                             render_wanted = true;
                         }
-                        ("global_queue_update", None, MpdQueryResult::Queue(queue)) => {
+                        (GLOBAL_QUEUE_UPDATE, None, MpdQueryResult::Queue(queue)) => {
                             ctx.queue = queue.unwrap_or_default();
+                            ctx.cached_queue_time_total =
+                                ctx.queue.iter().filter_map(|s| s.duration).sum();
                             render_wanted = true;
                             log::debug!(len = ctx.queue.len(); "Queue updated");
                             if let Err(err) = ui.on_event(UiEvent::QueueChanged, &mut ctx) {
@@ -667,17 +769,18 @@ fn handle_idle_event(event: IdleEvent, ctx: &Ctx, result_ui_evs: &mut HashSet<Id
                 .id(GLOBAL_QUEUE_UPDATE)
                 .replace_id("playlist")
                 .query(move |client| Ok(MpdQueryResult::Queue(client.playlist_info()?)));
-            if ctx.config.reflect_changes_to_playlist {
-                // Do not replace because we want to update currently loaded playlist if any
-                ctx.query().id(GLOBAL_STATUS_UPDATE).replace_id("status_from_playlist").query(
-                    move |client| {
-                        Ok(MpdQueryResult::Status {
-                            data: client.get_status()?,
-                            source_event: Some(IdleEvent::Playlist),
-                        })
-                    },
-                );
-            }
+
+            // Do not replace because we want to update currently loaded playlist if any
+            // Also have to query every time because the current song position may change
+            // during queue update (shuffle, move, ...)
+            ctx.query().id(GLOBAL_STATUS_UPDATE).replace_id("status_from_playlist").query(
+                move |client| {
+                    Ok(MpdQueryResult::Status {
+                        data: client.get_status()?,
+                        source_event: Some(IdleEvent::Playlist),
+                    })
+                },
+            );
         }
         IdleEvent::Sticker => {
             if ctx.stickers_supported.into() {
@@ -698,7 +801,14 @@ fn handle_idle_event(event: IdleEvent, ctx: &Ctx, result_ui_evs: &mut HashSet<Id
                 })
             });
         }
-        IdleEvent::Update => {}
+        IdleEvent::Update => {
+            ctx.query().id(GLOBAL_STATUS_UPDATE).replace_id("status").query(move |client| {
+                Ok(MpdQueryResult::Status {
+                    data: client.get_status()?,
+                    source_event: Some(IdleEvent::Update),
+                })
+            });
+        }
         IdleEvent::Output => {}
         IdleEvent::Partition
         | IdleEvent::Subscription

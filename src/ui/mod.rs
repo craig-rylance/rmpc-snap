@@ -16,8 +16,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Color, Style},
-    symbols::border,
-    widgets::{Block, Borders},
+    widgets::Block,
 };
 use tab_screen::TabScreen;
 
@@ -27,7 +26,7 @@ use crate::{
     config::{
         Config,
         cli::{Args, Command},
-        keys::{CommonAction, GlobalAction, actions::RateKind},
+        keys::{CommonAction, GlobalAction, Key, actions::RateKind},
         tabs::{PaneType, SizedPaneOrSplit, TabName},
         theme::level_styles::LevelStyles,
     },
@@ -46,19 +45,24 @@ use crate::{
     shared::{
         events::{Level, WorkRequest},
         id::Id,
-        key_event::KeyEvent,
+        keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::MouseEvent,
         mpd_client_ext::{Enqueue, MpdClientExt},
-        ytdlp::YtDlpHostKind,
+        ytdlp::YtDlpHost,
     },
-    ui::{image::facade::EncodeData, modals::menu::create_rating_modal},
+    ui::{
+        image::facade::EncodeData,
+        input::{InputEvent, InputResultEvent},
+        modals::{downloads::DownloadsModal, menu::create_rating_modal},
+    },
 };
 
 pub mod browser;
 pub mod dir_or_song;
 pub mod dirstack;
 pub mod image;
+pub mod input;
 pub mod modals;
 pub mod panes;
 pub mod tab_screen;
@@ -83,6 +87,8 @@ pub struct Ui<'ui> {
 
 const OPEN_DECODERS_MODAL: &str = "open_decoders_modal";
 const OPEN_OUTPUTS_MODAL: &str = "open_outputs_modal";
+
+pub const FILTER_PREFIX: &str = "[FILTER]:";
 
 macro_rules! active_tab_call {
     ($self:ident, $ctx:ident, $fn:ident($($param:expr),+)) => {
@@ -120,28 +126,36 @@ impl<'ui> Ui<'ui> {
     }
 
     pub fn change_tab(&mut self, new_tab: TabName, ctx: &mut Ctx) -> Result<()> {
-        self.layout.for_each_pane(self.area, &mut |pane, _, _, _| {
-            match self.panes.get_mut(&pane.pane, ctx)? {
-                Panes::TabContent => {
-                    active_tab_call!(self, ctx, on_hide(ctx))?;
+        self.layout.for_each_pane(
+            self.area,
+            &mut |pane, _, _, _| {
+                match self.panes.get_mut(&pane.pane, ctx)? {
+                    Panes::TabContent => {
+                        active_tab_call!(self, ctx, on_hide(ctx))?;
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+            ctx,
+        )?;
 
         ctx.active_tab = new_tab.clone();
         self.on_event(UiEvent::TabChanged(new_tab), ctx)?;
 
-        self.layout.for_each_pane(self.area, &mut |pane, pane_area, _, _| {
-            match self.panes.get_mut(&pane.pane, ctx)? {
-                Panes::TabContent => {
-                    active_tab_call!(self, ctx, before_show(pane_area, ctx))?;
+        self.layout.for_each_pane(
+            self.area,
+            &mut |pane, pane_area, _, _| {
+                match self.panes.get_mut(&pane.pane, ctx)? {
+                    Panes::TabContent => {
+                        active_tab_call!(self, ctx, before_show(pane_area, ctx))?;
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            ctx,
+        )
     }
 
     pub fn render(&mut self, frame: &mut Frame, ctx: &mut Ctx) -> Result<()> {
@@ -170,6 +184,7 @@ impl<'ui> Ui<'ui> {
                 frame.render_widget(block.border_style(ctx.config.as_border_style()), block_area);
                 Ok(())
             },
+            ctx,
         )?;
 
         if ctx.config.theme.modal_backdrop && !self.modals.is_empty() {
@@ -190,20 +205,32 @@ impl<'ui> Ui<'ui> {
             return Ok(());
         }
 
-        self.layout.for_each_pane(self.area, &mut |pane, _, _, _| {
-            match self.panes.get_mut(&pane.pane, ctx)? {
-                Panes::TabContent => {
-                    active_tab_call!(self, ctx, handle_mouse_event(event, ctx))?;
+        self.layout.for_each_pane(
+            self.area,
+            &mut |pane, _, _, _| {
+                match self.panes.get_mut(&pane.pane, ctx)? {
+                    Panes::TabContent => {
+                        active_tab_call!(self, ctx, handle_mouse_event(event, ctx))?;
+                    }
+                    mut pane_instance => {
+                        pane_call!(pane_instance, handle_mouse_event(event, ctx))?;
+                    }
                 }
-                mut pane_instance => {
-                    pane_call!(pane_instance, handle_mouse_event(event, ctx))?;
-                }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            ctx,
+        )?;
+
+        ctx.render()?;
+
+        Ok(())
     }
 
-    pub fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<KeyHandleResult> {
+    pub fn handle_action(
+        &mut self,
+        key: &mut ActionEvent,
+        ctx: &mut Ctx,
+    ) -> Result<KeyHandleResult> {
         if let Some(ref mut modal) = self.modals.last_mut() {
             modal.handle_key(key, ctx)?;
             return Ok(KeyHandleResult::None);
@@ -211,7 +238,7 @@ impl<'ui> Ui<'ui> {
 
         active_tab_call!(self, ctx, handle_action(key, ctx))?;
 
-        if let Some(action) = key.as_global_action(ctx) {
+        if let Some(action) = key.claim_global() {
             match action {
                 GlobalAction::Partition { name: Some(name), autocreate } => {
                     let name = name.clone();
@@ -309,8 +336,7 @@ impl<'ui> Ui<'ui> {
                     }
                 }
                 GlobalAction::CommandMode => {
-                    modal!(
-                        ctx,
+                    let modal =
                         InputModal::new(ctx).title("Execute a command").on_confirm(|ctx, value| {
                             match Args::parse_cli_line(value) {
                                 Ok(Args {
@@ -324,16 +350,44 @@ impl<'ui> Ui<'ui> {
                                         }),
                                     ..
                                 }) => {
-                                    let kind: YtDlpHostKind = provider.into();
+                                    let kind: YtDlpHost = provider.into();
 
-                                    if let Err(e) = ctx.work_sender.send(WorkRequest::SearchYt {
+                                    let info_msg = format!("Searching '{query}' on {kind}");
+                                    let send_result = ctx.work_sender.send(WorkRequest::SearchYt {
                                         query,
                                         kind,
                                         limit,
                                         interactive,
                                         position,
-                                    }) {
-                                        log::error!("Failed to send SearchYt work: {e}");
+                                    });
+
+                                    match send_result {
+                                        Ok(()) => {
+                                            status_info!("{info_msg}");
+                                        }
+                                        Err(err) => {
+                                            log::error!("Failed to send SearchYt work: {err}");
+                                        }
+                                    }
+
+                                    Ok(())
+                                }
+
+                                Ok(Args {
+                                    command: Some(Command::AddYt { url, position }),
+                                    ..
+                                }) => {
+                                    let send_result =
+                                        ctx.ytdlp_manager.download_url(&url, position);
+                                    match send_result {
+                                        Ok(()) => {
+                                            if ctx.config.auto_open_downloads {
+                                                modal!(ctx, DownloadsModal::new(ctx));
+                                            }
+                                        }
+                                        Err(err) => {
+                                            status_error!(err:?; "Failed to queue yt-dlp download");
+                                        }
                                     }
                                     Ok(())
                                 }
@@ -355,8 +409,8 @@ impl<'ui> Ui<'ui> {
                                     Ok(())
                                 }
                             }
-                        })
-                    );
+                        });
+                    modal!(ctx, modal);
                 }
                 GlobalAction::NextTrack if ctx.status.state != State::Stop => {
                     let keep_state = ctx.config.keep_state_on_song_change;
@@ -587,8 +641,11 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::AddRandom => {
                     modal!(ctx, AddRandomModal::new(ctx));
                 }
+                GlobalAction::ShowDownloads => {
+                    modal!(ctx, DownloadsModal::new(ctx));
+                }
             }
-        } else if let Some(action) = key.as_common_action(ctx) {
+        } else if let Some(action) = key.claim_common() {
             #[allow(
                 clippy::collapsible_match,
                 reason = "Future expansion, remove when adding other actions"
@@ -653,21 +710,67 @@ impl<'ui> Ui<'ui> {
         Ok(KeyHandleResult::None)
     }
 
+    pub fn handle_insert_mode(
+        &mut self,
+        action: Option<&mut ActionEvent>,
+        buf: &[Key],
+        ctx: &mut Ctx,
+    ) -> Result<()> {
+        if let Some(action) = action {
+            // We got some resolved keybind in insert mode. Currently only Confirm and Close
+            // are possible to be bound there so this is fine.
+            let kind = match action.claim_common() {
+                Some(CommonAction::Confirm) => InputResultEvent::Confirm,
+                Some(CommonAction::Close) => InputResultEvent::Cancel,
+                other => {
+                    log::error!(other:?; "Expected Confirm or Close action in insert mode");
+                    return Ok(());
+                }
+            };
+
+            if let Some(ref mut modal) = self.modals.last_mut() {
+                modal.handle_insert_mode(kind, ctx)?;
+            } else {
+                active_tab_call!(self, ctx, handle_insert_mode(kind, ctx))?;
+            }
+
+            ctx.input.normal_mode();
+        } else {
+            // Resolve each buffered key individually
+            for key in buf {
+                if let Some(kind) = ctx.input.handle_input(InputEvent::from_key_event(*key)) {
+                    if let Some(ref mut modal) = self.modals.last_mut() {
+                        modal.handle_insert_mode(kind, ctx)?;
+                    } else {
+                        active_tab_call!(self, ctx, handle_insert_mode(kind, ctx))?;
+                    }
+                }
+            }
+        }
+
+        ctx.render()?;
+        Ok(())
+    }
+
     pub fn before_show(&mut self, area: Rect, ctx: &mut Ctx) -> Result<()> {
         self.calc_areas(area, ctx);
 
-        self.layout.for_each_pane(self.area, &mut |pane, pane_area, _, _| {
-            match self.panes.get_mut(&pane.pane, ctx)? {
-                Panes::TabContent => {
-                    active_tab_call!(self, ctx, before_show(pane_area, ctx))?;
+        self.layout.for_each_pane(
+            self.area,
+            &mut |pane, pane_area, _, _| {
+                match self.panes.get_mut(&pane.pane, ctx)? {
+                    Panes::TabContent => {
+                        active_tab_call!(self, ctx, before_show(pane_area, ctx))?;
+                    }
+                    mut pane_instance => {
+                        pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
+                        pane_call!(pane_instance, before_show(ctx))?;
+                    }
                 }
-                mut pane_instance => {
-                    pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
-                    pane_call!(pane_instance, before_show(ctx))?;
-                }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            ctx,
+        )
     }
 
     pub fn on_ui_app_event(&mut self, event: UiAppEvent, ctx: &mut Ctx) -> Result<()> {
@@ -723,23 +826,28 @@ impl<'ui> Ui<'ui> {
         log::trace!(area:?; "Terminal was resized");
         self.calc_areas(area, ctx);
 
-        self.layout.for_each_pane(self.area, &mut |pane, pane_area, _, _| {
-            match self.panes.get_mut(&pane.pane, ctx)? {
-                Panes::TabContent => {
-                    active_tab_call!(self, ctx, resize(pane_area, ctx))?;
+        self.layout.for_each_pane(
+            self.area,
+            &mut |pane, pane_area, _, _| {
+                match self.panes.get_mut(&pane.pane, ctx)? {
+                    Panes::TabContent => {
+                        active_tab_call!(self, ctx, resize(pane_area, ctx))?;
+                    }
+                    mut pane_instance => {
+                        pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
+                        pane_call!(pane_instance, resize(pane_area, ctx))?;
+                    }
                 }
-                mut pane_instance => {
-                    pane_call!(pane_instance, calculate_areas(pane_area, ctx))?;
-                    pane_call!(pane_instance, resize(pane_area, ctx))?;
-                }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+            ctx,
+        )
     }
 
     pub fn on_event(&mut self, mut event: UiEvent, ctx: &mut Ctx) -> Result<()> {
         match event {
             UiEvent::Database => {
+                ctx.input.clear_all_buffers();
                 status_warn!(
                     "The music database has been updated. Some parts of the UI may have been reinitialized to prevent inconsistent behaviours."
                 );
@@ -747,17 +855,21 @@ impl<'ui> Ui<'ui> {
             UiEvent::ConfigChanged => {
                 // Call on_hide for all panes in the current tab and current layout because they
                 // might not be visible after the change
-                self.layout.for_each_pane(self.area, &mut |pane, _, _, _| {
-                    match self.panes.get_mut(&pane.pane, ctx)? {
-                        Panes::TabContent => {
-                            active_tab_call!(self, ctx, on_hide(ctx))?;
+                self.layout.for_each_pane(
+                    self.area,
+                    &mut |pane, _, _, _| {
+                        match self.panes.get_mut(&pane.pane, ctx)? {
+                            Panes::TabContent => {
+                                active_tab_call!(self, ctx, on_hide(ctx))?;
+                            }
+                            mut pane_instance => {
+                                pane_call!(pane_instance, on_hide(ctx))?;
+                            }
                         }
-                        mut pane_instance => {
-                            pane_call!(pane_instance, on_hide(ctx))?;
-                        }
-                    }
-                    Ok(())
-                })?;
+                        Ok(())
+                    },
+                    ctx,
+                )?;
 
                 self.layout = ctx.config.theme.layout.clone();
                 let new_active_tab = ctx
@@ -798,6 +910,7 @@ impl<'ui> Ui<'ui> {
                 #[cfg(debug_assertions)]
                 Panes::Logs(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Queue(p) => p.on_event(&mut event, visible, ctx),
+                Panes::QueueHeader(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Directories(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Albums(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Artists(p) => p.on_event(&mut event, visible, ctx),
@@ -843,6 +956,7 @@ impl<'ui> Ui<'ui> {
                     #[cfg(debug_assertions)]
                     Panes::Logs(p) => p.on_query_finished(id, data, visible, ctx),
                     Panes::Queue(p) => p.on_query_finished(id, data, visible, ctx),
+                    Panes::QueueHeader(p) => p.on_query_finished(id, data, visible, ctx),
                     Panes::Directories(p) => p.on_query_finished(id, data, visible, ctx),
                     Panes::Albums(p) => p.on_query_finished(id, data, visible, ctx),
                     Panes::Artists(p) => p.on_query_finished(id, data, visible, ctx),
@@ -921,6 +1035,7 @@ pub enum UiEvent {
     PlaybackStateChanged,
     ImageEncoded { data: EncodeData },
     ImageEncodeFailed { err: anyhow::Error },
+    DownloadsUpdated,
 }
 
 impl TryFrom<IdleEvent> for UiEvent {
@@ -990,24 +1105,6 @@ impl Config {
             })
             .unwrap_or(current_screen)
             .clone()
-    }
-
-    fn as_header_table_block(&self) -> ratatui::widgets::Block<'_> {
-        if !self.theme.draw_borders {
-            return ratatui::widgets::Block::default();
-        }
-        Block::default().border_style(self.as_border_style())
-    }
-
-    fn as_tabs_block<'block>(&self) -> ratatui::widgets::Block<'block> {
-        if !self.theme.draw_borders {
-            return ratatui::widgets::Block::default()/* .padding(Padding::new(0, 0, 1, 1)) */;
-        }
-
-        ratatui::widgets::Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_set(border::ONE_EIGHTH_WIDE)
-            .border_style(self.as_border_style())
     }
 
     fn as_border_style(&self) -> ratatui::style::Style {

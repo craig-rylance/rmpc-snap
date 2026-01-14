@@ -13,7 +13,13 @@ use crossterm::{
     style::{PrintStyledContent, Stylize},
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
-use ratatui::{Frame, layout::Rect, style::Style, widgets::Block};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    prelude::FromCrossterm,
+    style::{Color, Style},
+    widgets::Block,
+};
 
 use super::Pane;
 use crate::{
@@ -25,7 +31,7 @@ use crate::{
     mpd::commands::State,
     shared::{
         dependencies::CAVA,
-        key_event::KeyEvent,
+        keys::ActionEvent,
         terminal::{TERMINAL, TtyWriter},
     },
     status_warn,
@@ -363,7 +369,7 @@ impl CavaPane {
         self.command_channel
             .0
             .send_timeout(cmd, Duration::from_secs(3))
-            .map_err(|err| anyhow!("Failed to send command to cava thread: {}", err))
+            .map_err(|err| anyhow!("Failed to send command to cava thread: {err}"))
     }
 }
 
@@ -371,7 +377,8 @@ impl Pane for CavaPane {
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx) -> anyhow::Result<()> {
         self.area = area;
         frame.render_widget(
-            Block::default().style(Style::default().bg(ctx.config.theme.cava.bg_color.into())),
+            Block::default()
+                .style(Style::default().bg(Color::from_crossterm(ctx.config.theme.cava.bg_color))),
             area,
         );
 
@@ -393,7 +400,7 @@ impl Pane for CavaPane {
         Ok(())
     }
 
-    fn handle_action(&mut self, _ev: &mut KeyEvent, _ctx: &mut Ctx) -> anyhow::Result<()> {
+    fn handle_action(&mut self, _ev: &mut ActionEvent, _ctx: &mut Ctx) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -426,11 +433,15 @@ impl Pane for CavaPane {
                 }
             }
             UiEvent::Hidden if is_visible => {
-                self.pause_and_clear(ctx)?;
+                if !self.is_modal_open {
+                    self.pause_and_clear(ctx)?;
+                }
             }
             UiEvent::ModalOpened if is_visible => {
+                if !self.is_modal_open {
+                    self.pause_and_clear(ctx)?;
+                }
                 self.is_modal_open = true;
-                self.pause_and_clear(ctx)?;
             }
             UiEvent::ModalClosed if is_visible && matches!(ctx.status.state, State::Play) => {
                 self.is_modal_open = false;

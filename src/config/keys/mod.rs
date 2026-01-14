@@ -13,47 +13,45 @@ pub use actions::{
     QueueActions,
     SearchActions,
 };
-use actions::{
-    AlbumsActionsFile,
-    ArtistsActionsFile,
-    CommonActionFile,
-    DirectoriesActionsFile,
-    GlobalActionFile,
-    QueueActionsFile,
-};
-use crossterm::event::{KeyCode, KeyModifiers};
+use actions::{CommonActionFile, GlobalActionFile, QueueActionsFile};
 pub use key::Key;
 use serde::{Deserialize, Serialize};
 
-use crate::config::keys::actions::SaveKind;
+use super::defaults;
+use crate::config::keys::{
+    actions::{DuplicateStrategy, RateKind, SaveKind},
+    key::KeySequence,
+};
 
 pub(crate) mod actions;
 pub mod key;
 
-#[derive(Debug, PartialEq, Default, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct KeyConfig {
-    pub global: HashMap<Key, GlobalAction>,
-    pub navigation: HashMap<Key, CommonAction>,
-    pub albums: HashMap<Key, AlbumsActions>,
-    pub artists: HashMap<Key, ArtistsActions>,
-    pub directories: HashMap<Key, DirectoriesActions>,
-    pub search: HashMap<Key, SearchActions>,
+    pub global: HashMap<KeySequence, GlobalAction>,
+    pub navigation: HashMap<KeySequence, CommonAction>,
+    pub albums: HashMap<KeySequence, AlbumsActions>,
+    pub artists: HashMap<KeySequence, ArtistsActions>,
+    pub directories: HashMap<KeySequence, DirectoriesActions>,
+    pub search: HashMap<KeySequence, SearchActions>,
     #[cfg(debug_assertions)]
-    pub logs: HashMap<Key, LogsActions>,
-    pub queue: HashMap<Key, QueueActions>,
+    pub logs: HashMap<KeySequence, LogsActions>,
+    pub queue: HashMap<KeySequence, QueueActions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct KeyConfigFile {
+    #[serde(default = "defaults::bool::<false>")]
+    pub clear: bool,
     #[serde(default)]
-    pub global: HashMap<Key, GlobalActionFile>,
+    pub global: HashMap<KeySequence, GlobalActionFile>,
     #[serde(default)]
-    pub navigation: HashMap<Key, CommonActionFile>,
+    pub navigation: HashMap<KeySequence, CommonActionFile>,
     #[cfg(debug_assertions)]
     #[serde(default)]
-    pub logs: HashMap<Key, LogsActionsFile>,
+    pub logs: HashMap<KeySequence, LogsActionsFile>,
     #[serde(default)]
-    pub queue: HashMap<Key, QueueActionsFile>,
+    pub queue: HashMap<KeySequence, QueueActionsFile>,
 }
 
 impl Default for KeyConfigFile {
@@ -62,97 +60,123 @@ impl Default for KeyConfigFile {
     fn default() -> Self {
         use GlobalActionFile as G;
         use CommonActionFile as C;
-        use AlbumsActionsFile as Al;
-        use ArtistsActionsFile as Ar;
-        use DirectoriesActionsFile  as D;
-        use KeyCode as K;
-        use KeyModifiers as M;
         #[cfg(debug_assertions)]
         use LogsActionsFile as L;
         use QueueActionsFile as Q;
-        Self {
-            global: HashMap::from([
-                (Key { key: K::Char('q'), modifiers: M::NONE  }, G::Quit),
-                (Key { key: K::Char(':'), modifiers: M::NONE  }, G::CommandMode),
-                (Key { key: K::Char('~'), modifiers: M::NONE  }, G::ShowHelp),
-                (Key { key: K::Char('I'), modifiers: M::SHIFT }, G::ShowCurrentSongInfo),
-                (Key { key: K::Char('O'), modifiers: M::SHIFT }, G::ShowOutputs),
-                (Key { key: K::Char('P'), modifiers: M::SHIFT }, G::ShowDecoders),
-                (Key { key: K::Char('>'), modifiers: M::NONE  }, G::NextTrack),
-                (Key { key: K::Char('<'), modifiers: M::NONE  }, G::PreviousTrack),
-                (Key { key: K::Char('s'), modifiers: M::NONE  }, G::Stop),
-                (Key { key: K::Char('z'), modifiers: M::NONE  }, G::ToggleRepeat),
-                (Key { key: K::Char('x'), modifiers: M::NONE  }, G::ToggleRandom),
-                (Key { key: K::Char('c'), modifiers: M::NONE  }, G::ToggleConsume),
-                (Key { key: K::Char('v'), modifiers: M::NONE  }, G::ToggleSingle),
-                (Key { key: K::Char('p'), modifiers: M::NONE  }, G::TogglePause),
-                (Key { key: K::Char('f'), modifiers: M::NONE  }, G::SeekForward),
-                (Key { key: K::Char('b'), modifiers: M::NONE  }, G::SeekBack),
-                (Key { key: K::Char('u'), modifiers: M::NONE  }, G::Update),
-                (Key { key: K::Char('U'), modifiers: M::SHIFT }, G::Rescan),
-                (Key { key: K::Char(','), modifiers: M::NONE  }, G::VolumeDown),
-                (Key { key: K::Char('.'), modifiers: M::NONE  }, G::VolumeUp),
-                (Key { key: K::BackTab,   modifiers: M::SHIFT }, G::PreviousTab),
-                (Key { key: K::Tab,       modifiers: M::NONE  }, G::NextTab),
-                (Key { key: K::Char('R'), modifiers: M::SHIFT }, G::AddRandom),
-                (Key { key: K::Char('1'), modifiers: M::NONE  }, G::SwitchToTab("Queue".to_string())),
-                (Key { key: K::Char('2'), modifiers: M::NONE  }, G::SwitchToTab("Directories".to_string())),
-                (Key { key: K::Char('3'), modifiers: M::NONE  }, G::SwitchToTab("Artists".to_string())),
-                (Key { key: K::Char('4'), modifiers: M::NONE  }, G::SwitchToTab("Album Artists".to_string())),
-                (Key { key: K::Char('5'), modifiers: M::NONE  }, G::SwitchToTab("Albums".to_string())),
-                (Key { key: K::Char('6'), modifiers: M::NONE  }, G::SwitchToTab("Playlists".to_string())),
-                (Key { key: K::Char('7'), modifiers: M::NONE  }, G::SwitchToTab("Search".to_string())),
-            ]),
-            navigation: HashMap::from([
-                (Key { key: K::Char('k'), modifiers: M::NONE    }, C::Up),
-                (Key { key: K::Char('j'), modifiers: M::NONE    }, C::Down),
-                (Key { key: K::Char('l'), modifiers: M::NONE    }, C::Right),
-                (Key { key: K::Left,      modifiers: M::NONE    }, C::Left),
-                (Key { key: K::Up,        modifiers: M::NONE    }, C::Up),
-                (Key { key: K::Down,      modifiers: M::NONE    }, C::Down),
-                (Key { key: K::Right,     modifiers: M::NONE    }, C::Right),
-                (Key { key: K::Char('h'), modifiers: M::NONE    }, C::Left),
-                (Key { key: K::Char('k'), modifiers: M::CONTROL }, C::PaneUp),
-                (Key { key: K::Char('j'), modifiers: M::CONTROL }, C::PaneDown),
-                (Key { key: K::Char('l'), modifiers: M::CONTROL }, C::PaneRight),
-                (Key { key: K::Char('h'), modifiers: M::CONTROL }, C::PaneLeft),
-                (Key { key: K::Char('K'), modifiers: M::SHIFT   }, C::MoveUp),
-                (Key { key: K::Char('J'), modifiers: M::SHIFT   }, C::MoveDown),
-                (Key { key: K::Char('d'), modifiers: M::CONTROL }, C::DownHalf),
-                (Key { key: K::Char('u'), modifiers: M::CONTROL }, C::UpHalf),
-                (Key { key: K::Char('G'), modifiers: M::SHIFT   }, C::Bottom),
-                (Key { key: K::Char('g'), modifiers: M::NONE    }, C::Top),
-                (Key { key: K::Char('/'), modifiers: M::NONE    }, C::EnterSearch),
-                (Key { key: K::Char('n'), modifiers: M::NONE    }, C::NextResult),
-                (Key { key: K::Char('N'), modifiers: M::SHIFT   }, C::PreviousResult),
-                (Key { key: K::Char(' '), modifiers: M::NONE    }, C::Select),
-                (Key { key: K::Char(' '), modifiers: M::CONTROL }, C::InvertSelection),
-                (Key { key: K::Char('a'), modifiers: M::NONE    }, C::Add),
-                (Key { key: K::Char('A'), modifiers: M::SHIFT   }, C::AddAll),
-                (Key { key: K::Char('D'), modifiers: M::SHIFT   }, C::Delete),
-                (Key { key: K::Char('r'), modifiers: M::NONE    }, C::Rename),
-                (Key { key: K::Char('c'), modifiers: M::CONTROL }, C::Close),
-                (Key { key: K::Esc,       modifiers: M::NONE    }, C::Close),
-                (Key { key: K::Enter,     modifiers: M::NONE    }, C::Confirm),
-                (Key { key: K::Char('i'), modifiers: M::NONE    }, C::FocusInput),
-                (Key { key: K::Char('B'), modifiers: M::SHIFT   }, C::ShowInfo),
-                (Key { key: K::Char('z'), modifiers: M::CONTROL }, C::ContextMenu {}),
-                (Key { key: K::Char('s'), modifiers: M::CONTROL }, C::Save { kind: SaveKind::default() }),
-            ]),
-            #[cfg(debug_assertions)]
-            logs: HashMap::from([
-                (Key { key: K::Char('D'), modifiers: M::SHIFT   }, L::Clear),
-                (Key { key: K::Char('S'), modifiers: M::SHIFT   }, L::ToggleScroll),
-            ]),
-            queue: HashMap::from([
-                (Key { key: K::Char('d'), modifiers: M::NONE    }, Q::Delete),
-                (Key { key: K::Char('D'), modifiers: M::SHIFT   }, Q::DeleteAll),
-                (Key { key: K::Enter,     modifiers: M::NONE    }, Q::Play),
-                (Key { key: K::Char('a'), modifiers: M::NONE    }, Q::AddToPlaylist),
-                (Key { key: K::Char('C'), modifiers: M::SHIFT   }, Q::JumpToCurrent),
-                (Key { key: K::Char('X'), modifiers: M::SHIFT   }, Q::Shuffle),
-            ]),
-        }
+
+        let s = || KeySequence::new();
+
+        let global = HashMap::from([
+            (s().char('q'),                       G::Quit),
+            (s().char('?'),                       G::ShowHelp),
+            (s().char(':'),                       G::CommandMode),
+            (s().char('o').char('I'),             G::ShowCurrentSongInfo),
+            (s().char('o').char('o'),             G::ShowOutputs),
+            (s().char('o').char('p'),             G::ShowDecoders),
+            (s().char('o').char('d'),             G::ShowDownloads),
+            (s().char('o').char('P'),             G::Partition { name: None, autocreate: false }),
+            (s().char('z'),                       G::ToggleRepeat),
+            (s().char('x'),                       G::ToggleRandom),
+            (s().char('c'),                       G::ToggleConsume),
+            (s().char('v'),                       G::ToggleSingle),
+            (s().char('p'),                       G::TogglePause),
+            (s().char('s'),                       G::Stop),
+            (s().char('>'),                       G::NextTrack),
+            (s().char('<'),                       G::PreviousTrack),
+            (s().char('f'),                       G::SeekForward),
+            (s().char('b'),                       G::SeekBack),
+            (s().char(','),                       G::VolumeDown),
+            (s().char('.'),                       G::VolumeUp),
+            (s().tab(),                           G::NextTab),
+            (s().char('g').char('t'),             G::NextTab),
+            (s().tab().shift(),                   G::PreviousTab),
+            (s().char('g').char('T'),             G::PreviousTab),
+            (s().char('1'),                       G::SwitchToTab("Queue".to_string())),
+            (s().char('2'),                       G::SwitchToTab("Directories".to_string())),
+            (s().char('3'),                       G::SwitchToTab("Artists".to_string())),
+            (s().char('4'),                       G::SwitchToTab("Album Artists".to_string())),
+            (s().char('5'),                       G::SwitchToTab("Albums".to_string())),
+            (s().char('6'),                       G::SwitchToTab("Playlists".to_string())),
+            (s().char('7'),                       G::SwitchToTab("Search".to_string())),
+            (s().char('u').ctrl(),                G::Update),
+            (s().char('U').ctrl(),                G::Rescan),
+            (s().char('R'),                       G::AddRandom),
+        ]);
+
+        let navigation = HashMap::from([
+            (s().esc(),                           C::Close),
+            (s().char('c').ctrl(),                C::Close),
+            (s().cr(),                            C::Confirm),
+            (s().char('k'),                       C::Up),
+            (s().up(),                            C::Up),
+            (s().char('j'),                       C::Down),
+            (s().down(),                          C::Down),
+            (s().char('h'),                       C::Left),
+            (s().left(),                          C::Left),
+            (s().char('l'),                       C::Right),
+            (s().right(),                         C::Right),
+            (s().char('w').ctrl().char('k'),      C::PaneUp),
+            (s().up().ctrl(),                     C::PaneUp),
+            (s().char('w').ctrl().char('j'),      C::PaneDown),
+            (s().down().ctrl(),                   C::PaneDown),
+            (s().char('w').ctrl().char('h'),      C::PaneLeft),
+            (s().left().ctrl(),                   C::PaneLeft),
+            (s().char('w').ctrl().char('l'),      C::PaneRight),
+            (s().right().ctrl(),                  C::PaneRight),
+            (s().char('K'),                       C::MoveUp),
+            (s().char('J'),                       C::MoveDown),
+            (s().char('u').ctrl(),                C::UpHalf),
+            (s().char('d').ctrl(),                C::DownHalf),
+            (s().char('b').ctrl(),                C::PageUp),
+            (s().page_up(),                       C::PageUp),
+            (s().char('f').ctrl(),                C::PageDown),
+            (s().page_down(),                     C::PageDown),
+            (s().char('g').char('g'),             C::Top),
+            (s().char('G'),                       C::Bottom),
+            (s().char('/'),                       C::EnterSearch),
+            (s().char('n'),                       C::NextResult),
+            (s().char('N'),                       C::PreviousResult),
+            (s().char(' '),                       C::Select),
+            (s().char(' ').ctrl(),                C::InvertSelection),
+            (s().char('a'),                       C::Add),
+            (s().char('A'),                       C::AddAll),
+            (s().char('D'),                       C::Delete),
+            (s().char('r').ctrl(),                C::Rename),
+            (s().char('i'),                       C::FocusInput),
+            (s().char('o').char('i'),             C::ShowInfo),
+            (s().char('z').ctrl(),                C::ContextMenu {}),
+            (s().char('s').ctrl().char('s'),      C::Save { kind: SaveKind::Modal { all: false, duplicates_strategy: DuplicateStrategy::Ask } }),
+            (s().char('s').ctrl().char('a'),      C::Save { kind: SaveKind::Modal { all: true, duplicates_strategy: DuplicateStrategy::Ask } }),
+            (s().char('r'),                       C::Rate { kind: RateKind::default(), current: false, min_rating: 0, max_rating: 10 }),
+        ]);
+
+        let queue = HashMap::from([
+            (s().char('d'),                       Q::Delete),
+            (s().char('D'),                       Q::DeleteAll),
+            (s().cr(),                            Q::Play),
+            (s().char('C'),                       Q::JumpToCurrent),
+            (s().char('X'),                       Q::Shuffle),
+        ]);
+
+        #[cfg(debug_assertions)]
+        let logs = HashMap::from([
+            (s().char('D'),                       L::Clear),
+            (s().char('S'),                       L::ToggleScroll),
+        ]);
+
+        #[cfg(not(debug_assertions))]
+        return KeyConfigFile { clear: false, global, navigation, queue };
+
+        #[cfg(debug_assertions)]
+        return KeyConfigFile { clear: false, global, navigation, queue, logs };
+    }
+}
+
+impl Default for KeyConfig {
+    fn default() -> Self {
+        KeyConfigFile { clear: true, ..Default::default() }
+            .try_into()
+            .expect("Default KeyConfigFile should convert to KeyConfig")
     }
 }
 
@@ -160,21 +184,75 @@ impl TryFrom<KeyConfigFile> for KeyConfig {
     type Error = anyhow::Error;
 
     fn try_from(value: KeyConfigFile) -> Result<Self, Self::Error> {
-        Ok(KeyConfig {
-            global: value.global.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            navigation: value
+        if value.clear {
+            Ok(KeyConfig {
+                global: value.global.into_iter().map(|(k, v)| (k, v.into())).collect(),
+                navigation: value
+                    .navigation
+                    .into_iter()
+                    .map(|(k, v)| -> anyhow::Result<_> { Ok((k, v.try_into()?)) })
+                    .collect::<anyhow::Result<_>>()?,
+                albums: HashMap::new(),
+                artists: HashMap::new(),
+                directories: HashMap::new(),
+                search: HashMap::new(),
+                #[cfg(debug_assertions)]
+                logs: value.logs.into_iter().map(|(k, v)| (k, v.into())).collect(),
+                queue: value
+                    .queue
+                    .into_iter()
+                    .map(|(k, v)| -> anyhow::Result<_> { Ok((k, v.try_into()?)) })
+                    .collect::<anyhow::Result<_>>()?,
+            })
+        } else {
+            let global: HashMap<KeySequence, GlobalAction> =
+                value.global.into_iter().map(|(k, v)| (k, v.into())).collect();
+            let navigation: HashMap<KeySequence, CommonAction> = value
                 .navigation
                 .into_iter()
                 .map(|(k, v)| -> anyhow::Result<_> { Ok((k, v.try_into()?)) })
-                .collect::<anyhow::Result<_>>()?,
-            albums: HashMap::new(),
-            artists: HashMap::new(),
-            directories: HashMap::new(),
-            search: HashMap::new(),
+                .collect::<anyhow::Result<_>>()?;
+            let queue: HashMap<KeySequence, QueueActions> = value
+                .queue
+                .into_iter()
+                .map(|(k, v)| -> anyhow::Result<_> { Ok((k, v.try_into()?)) })
+                .collect::<anyhow::Result<_>>()?;
             #[cfg(debug_assertions)]
-            logs: value.logs.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            queue: value.queue.into_iter().map(|(k, v)| (k, v.into())).collect(),
-        })
+            let logs: HashMap<KeySequence, LogsActions> =
+                value.logs.into_iter().map(|(k, v)| (k, v.into())).collect();
+
+            let mut result = KeyConfig::default();
+
+            let all_key_overrides = global.keys().chain(navigation.keys()).chain(queue.keys());
+            #[cfg(debug_assertions)]
+            let all_key_overrides = all_key_overrides.chain(logs.keys());
+            for key in all_key_overrides {
+                result.global.remove(key);
+                result.navigation.remove(key);
+                result.queue.remove(key);
+                #[cfg(debug_assertions)]
+                result.logs.remove(key);
+            }
+
+            for (k, v) in global {
+                result.global.insert(k, v);
+            }
+
+            for (k, v) in navigation {
+                result.navigation.insert(k, v);
+            }
+
+            for (k, v) in queue {
+                result.queue.insert(k, v);
+            }
+
+            #[cfg(debug_assertions)]
+            for (k, v) in logs {
+                result.logs.insert(k, v);
+            }
+
+            Ok(result)
+        }
     }
 }
 
@@ -205,37 +283,72 @@ mod tests {
     #[rustfmt::skip]
     fn converts() {
         let input = KeyConfigFile {
-            global: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, GlobalActionFile::Quit)]),
+            clear: true,
+            global: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), GlobalActionFile::Quit)]),
 
             #[cfg(debug_assertions)]
-            logs: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, LogsActionsFile::Clear)]),
-            queue: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, QueueActionsFile::Play),
-                                  (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }, QueueActionsFile::Save)]),
-            // albums: HashMap::from([]),
-            // artists: HashMap::from([]),
-            // directories: HashMap::from([]),
+            logs: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), LogsActionsFile::Clear)]),
+            queue: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), QueueActionsFile::Play),
+                                  (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }.into(), QueueActionsFile::JumpToCurrent)]),
             navigation: HashMap::from([
-                (Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, CommonActionFile::Up),
-                (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }, CommonActionFile::Up)
+                (Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), CommonActionFile::Up),
+                (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }.into(), CommonActionFile::Up)
             ])
         };
         let expected = KeyConfig {
-            global: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, GlobalAction::Quit)]),
+            global: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), GlobalAction::Quit)]),
             #[cfg(debug_assertions)]
-            logs: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, LogsActions::Clear)]),
-            queue: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }, QueueActions::Play),
-                                  (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }, QueueActions::Save)]),
+            logs: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), LogsActions::Clear)]),
+            queue: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), QueueActions::Play),
+                                  (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }.into(), QueueActions::JumpToCurrent)]),
             albums: HashMap::from([]),
             artists: HashMap::from([]),
             directories: HashMap::from([]),
             search: HashMap::from([]),
-            navigation: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL }, CommonAction::Up),
-                                       (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }, CommonAction::Up)]),
+            navigation: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL }.into(), CommonAction::Up),
+                                       (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }.into(), CommonAction::Up)]),
         };
 
         let result: KeyConfig = input.try_into().unwrap();
 
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn converts_without_clearing() {
+        let input = KeyConfigFile {
+            clear: false,
+            global: HashMap::from([
+                (Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), GlobalActionFile::Quit),
+                (Key { key: KeyCode::Char(' '), modifiers: KeyModifiers::NONE }.into(), GlobalActionFile::TogglePause),
+            ]),
+            queue: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), QueueActionsFile::Play),
+                                  (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }.into(), QueueActionsFile::JumpToCurrent)]),
+            navigation: HashMap::from([
+                (Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), CommonActionFile::Up),
+                (Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }.into(), CommonActionFile::Up),
+            ]),
+            #[cfg(debug_assertions)]
+            logs: HashMap::from([(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), LogsActionsFile::Clear)]),
+        };
+
+        let mut default: KeyConfig = KeyConfig::default();
+        default.global.insert(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), GlobalAction::Quit);
+        default.queue.insert(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), QueueActions::Play);
+        default.queue.insert(Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT, }.into(), QueueActions::JumpToCurrent);
+        default.navigation.insert(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL }.into(), CommonAction::Up);
+        default.navigation.insert(Key { key: KeyCode::Char('b'), modifiers: KeyModifiers::SHIFT }.into(), CommonAction::Up);
+        #[cfg(debug_assertions)]
+        default.logs.insert(Key { key: KeyCode::Char('a'), modifiers: KeyModifiers::CONTROL, }.into(), LogsActions::Clear);
+
+        // <Space> is mapped in global keys, it has to remove the default `Select` mapping from navigation keys
+        default.global.insert(Key { key: KeyCode::Char(' '), modifiers: KeyModifiers::NONE, }.into(), GlobalAction::TogglePause);
+        default.navigation.remove(&Key { key: KeyCode::Char(' '), modifiers: KeyModifiers::NONE, }.into());
+
+        let result: KeyConfig = input.try_into().unwrap();
+
+        assert_eq!(result, default);
     }
 }

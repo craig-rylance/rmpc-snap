@@ -1,11 +1,11 @@
 use std::{borrow::Cow, collections::HashMap, fmt::Display};
 
 use anyhow::Result;
-use crossterm::event::KeyCode;
 use itertools::Itertools;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
+    macros::constraint,
     style::Style,
     symbols::border,
     text::{Line, Text},
@@ -13,18 +13,22 @@ use ratatui::{
 };
 use strum::{IntoDiscriminant, VariantArray};
 
-use super::{Modal, RectExt};
+use super::Modal;
 use crate::{
     config::keys::{CommonAction, ToDescription},
     ctx::Ctx,
     shared::{
         ext::iter::IntoZipLongest2,
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     status_warn,
-    ui::dirstack::DirState,
+    ui::{
+        FILTER_PREFIX,
+        dirstack::DirState,
+        input::{BufferId, InputResultEvent},
+    },
 };
 
 #[derive(Debug)]
@@ -32,9 +36,9 @@ pub struct KeybindsModal {
     id: Id,
     scrolling_state: DirState<TableState>,
     table_area: Rect,
-    filter: Option<String>,
-    filter_input_mode: bool,
+    filter_active: bool,
     filter_rows: Vec<Option<String>>,
+    filter_buffer_id: BufferId,
 }
 
 trait KeybindsExt {
@@ -67,17 +71,18 @@ impl KeybindsModal {
             id: id::new(),
             scrolling_state,
             table_area: Rect::default(),
-            filter: None,
-            filter_input_mode: false,
+            filter_active: false,
             filter_rows: Vec::new(),
+            filter_buffer_id: BufferId::new(),
         }
     }
 
-    pub fn jump_forward(&mut self, scrolloff: usize) {
-        let Some(filter) = self.filter.as_ref() else {
+    pub fn jump_forward(&mut self, scrolloff: usize, ctx: &Ctx) {
+        if !self.filter_active {
             status_warn!("No filter set");
             return;
-        };
+        }
+        let filter = ctx.input.value(self.filter_buffer_id);
         let Some(selected) = self.scrolling_state.get_selected() else {
             log::error!(state:? = self.scrolling_state; "No song selected");
             return;
@@ -88,7 +93,7 @@ impl KeybindsModal {
             let i = i % length;
             if let Some(row) = &self.filter_rows[i]
                 && !row.is_empty()
-                && row.contains(filter)
+                && row.contains(&filter)
             {
                 self.scrolling_state.select(Some(i), scrolloff);
                 break;
@@ -96,22 +101,23 @@ impl KeybindsModal {
         }
     }
 
-    pub fn jump_back(&mut self, scrolloff: usize) {
-        let Some(filter) = self.filter.as_ref() else {
+    pub fn jump_back(&mut self, scrolloff: usize, ctx: &Ctx) {
+        if !self.filter_active {
             status_warn!("No filter set");
             return;
-        };
+        }
         let Some(selected) = self.scrolling_state.get_selected() else {
             log::error!(state:? = self.scrolling_state; "No song selected");
             return;
         };
 
+        let filter = ctx.input.value(self.filter_buffer_id);
         let length = self.filter_rows.len();
         for i in (0..length).rev() {
             let i = (i + selected) % length;
             if let Some(row) = &self.filter_rows[i]
                 && !row.is_empty()
-                && row.contains(filter)
+                && row.contains(&filter)
             {
                 self.scrolling_state.select(Some(i), scrolloff);
                 break;
@@ -119,16 +125,17 @@ impl KeybindsModal {
         }
     }
 
-    pub fn jump_first(&mut self, scrolloff: usize) {
-        let Some(filter) = self.filter.as_ref() else {
+    pub fn jump_first(&mut self, scrolloff: usize, ctx: &Ctx) {
+        if !self.filter_active {
             status_warn!("No filter set");
             return;
-        };
+        }
 
+        let filter = ctx.input.value(self.filter_buffer_id);
         self.filter_rows
             .iter()
             .enumerate()
-            .find(|(_, item)| item.as_ref().is_some_and(|item| item.contains(filter)))
+            .find(|(_, item)| item.as_ref().is_some_and(|item| item.contains(&filter)))
             .inspect(|(idx, _)| self.scrolling_state.select(Some(*idx), scrolloff));
     }
 }
@@ -212,19 +219,20 @@ impl Modal for KeybindsModal {
     }
 
     fn render(&mut self, frame: &mut Frame, ctx: &mut Ctx) -> Result<()> {
-        let popup_area = frame.area().centered(90, 90);
+        let popup_area = frame.area().centered(constraint!(==90%), constraint!(==90%));
         frame.render_widget(Clear, popup_area);
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
             frame.render_widget(Block::default().style(Style::default().bg(bg_color)), popup_area);
         }
+        let filter = ctx.input.value(self.filter_buffer_id);
 
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
             .border_style(ctx.config.as_border_style())
             .title_alignment(ratatui::prelude::Alignment::Center);
-        if let Some(filter) = &self.filter {
-            block = block.title(format!("Keybinds | [FILTER]: {filter}"));
+        if self.filter_active {
+            block = block.title(format!("Keybinds | {FILTER_PREFIX} {filter}"));
         } else {
             block = block.title("Keybinds");
         }
@@ -258,7 +266,7 @@ impl Modal for KeybindsModal {
             key_area.width,
             action_area.width,
             desc_area.width,
-            self.filter.as_deref(),
+            self.filter_active.then_some(filter.as_str()),
             ctx.config.theme.highlighted_item_style,
         )
         .unzip();
@@ -267,7 +275,7 @@ impl Modal for KeybindsModal {
             key_area.width,
             action_area.width,
             desc_area.width,
-            self.filter.as_deref(),
+            self.filter_active.then_some(filter.as_str()),
             ctx.config.theme.highlighted_item_style,
         )
         .unzip();
@@ -276,7 +284,7 @@ impl Modal for KeybindsModal {
             key_area.width,
             action_area.width,
             desc_area.width,
-            self.filter.as_deref(),
+            self.filter_active.then_some(filter.as_str()),
             ctx.config.theme.highlighted_item_style,
         )
         .unzip();
@@ -330,45 +338,25 @@ impl Modal for KeybindsModal {
         return Ok(());
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if self.filter_input_mode {
-            match key.as_common_action(ctx) {
-                Some(CommonAction::Confirm) => {
-                    self.filter_input_mode = false;
-
-                    ctx.render()?;
-                }
-                Some(CommonAction::Close) => {
-                    self.filter_input_mode = false;
-                    self.filter = None;
-
-                    ctx.render()?;
-                }
-                _ => {
-                    key.stop_propagation();
-                    match key.code() {
-                        KeyCode::Char(c) => {
-                            if let Some(ref mut f) = self.filter {
-                                for c in c.to_lowercase() {
-                                    f.push(c);
-                                }
-                            }
-                            self.jump_first(ctx.config.scrolloff);
-
-                            ctx.render()?;
-                        }
-                        KeyCode::Backspace => {
-                            if let Some(ref mut f) = self.filter {
-                                f.pop();
-                            }
-
-                            ctx.render()?;
-                        }
-                        _ => {}
-                    }
-                }
+    fn handle_insert_mode(&mut self, kind: InputResultEvent, ctx: &Ctx) -> Result<()> {
+        match kind {
+            InputResultEvent::Push => {
+                self.jump_first(ctx.config.scrolloff, ctx);
             }
-        } else if let Some(action) = key.as_common_action(ctx) {
+            InputResultEvent::Pop => {}
+            InputResultEvent::Confirm => {}
+            InputResultEvent::Cancel => {
+                ctx.input.clear_buffer(self.filter_buffer_id);
+                self.filter_active = false;
+            }
+            InputResultEvent::NoChange => {}
+        }
+        ctx.render()?;
+        Ok(())
+    }
+
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = key.claim_common() {
             match action {
                 CommonAction::DownHalf => {
                     self.scrolling_state.next_half_viewport(ctx.config.scrolloff);
@@ -404,18 +392,19 @@ impl Modal for KeybindsModal {
                     self.hide(ctx)?;
                 }
                 CommonAction::EnterSearch => {
-                    self.filter_input_mode = true;
-                    self.filter = Some(String::new());
+                    ctx.input.clear_buffer(self.filter_buffer_id);
+                    ctx.input.insert_mode(self.filter_buffer_id);
+                    self.filter_active = true;
 
                     ctx.render()?;
                 }
                 CommonAction::NextResult => {
-                    self.jump_forward(ctx.config.scrolloff);
+                    self.jump_forward(ctx.config.scrolloff, ctx);
 
                     ctx.render()?;
                 }
                 CommonAction::PreviousResult => {
-                    self.jump_back(ctx.config.scrolloff);
+                    self.jump_back(ctx.config.scrolloff, ctx);
 
                     ctx.render()?;
                 }
@@ -442,11 +431,11 @@ impl Modal for KeybindsModal {
             MouseEventKind::MiddleClick => {}
             MouseEventKind::RightClick => {}
             MouseEventKind::ScrollDown => {
-                self.scrolling_state.scroll_down(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_down(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::ScrollUp => {
-                self.scrolling_state.scroll_up(1, ctx.config.scrolloff);
+                self.scrolling_state.scroll_up(ctx.config.scroll_amount, ctx.config.scrolloff);
                 ctx.render()?;
             }
             MouseEventKind::Drag { drag_start_position: _ } => {}

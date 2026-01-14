@@ -33,9 +33,9 @@ impl Widget for Header<'_> {
         let song = self.ctx.find_current_song_in_queue().map(|(_, song)| song);
         for row in 0..row_count {
             let [left, center, right] = *Layout::horizontal([
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
+                Constraint::Percentage(config.theme.header_column_widths[0]),
+                Constraint::Percentage(config.theme.header_column_widths[1]),
+                Constraint::Percentage(config.theme.header_column_widths[2]),
             ])
             .split(layouts[row]) else {
                 return;
@@ -55,9 +55,18 @@ impl Widget for Header<'_> {
     }
 }
 
-struct PropertyTemplates<'a>(&'a [Property<PropertyKind>]);
+pub struct PropertyTemplates<'a>(&'a [Property<PropertyKind>]);
 impl<'a> PropertyTemplates<'a> {
-    fn format(&'a self, song: Option<&'a Song>, ctx: &'a Ctx, config: &Config) -> Line<'a> {
+    pub fn new(templates: &'a [Property<PropertyKind>]) -> Self {
+        Self(templates)
+    }
+
+    pub fn format<'song: 'a>(
+        &'a self,
+        song: Option<&'song Song>,
+        ctx: &'song Ctx,
+        config: &Config,
+    ) -> Line<'a> {
         Line::from(self.0.iter().fold(Vec::new(), |mut acc, val| {
             match val.as_span(
                 song,

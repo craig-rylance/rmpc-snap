@@ -5,6 +5,7 @@ use bon::bon;
 use itertools::Itertools;
 use ratatui::{
     Frame,
+    macros::constraint,
     prelude::{Constraint, Layout},
     style::Style,
     symbols::border,
@@ -12,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear},
 };
 
-use super::{BUTTON_GROUP_SYMBOLS, Modal, RectExt};
+use super::{BUTTON_GROUP_SYMBOLS, Modal};
 use crate::{
     config::{
         Size,
@@ -21,7 +22,7 @@ use crate::{
     ctx::Ctx,
     shared::{
         id::{self, Id},
-        key_event::KeyEvent,
+        keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
     },
     ui::widgets::button::{Button, ButtonGroup, ButtonGroupState},
@@ -132,9 +133,10 @@ impl Modal for ConfirmModal<'_> {
             .flat_map(|line| textwrap::wrap(line, (width as usize).saturating_sub(2)))
             .collect_vec();
 
-        let popup_area = frame
-            .area()
-            .centered_exact(width, self.size.map_or(u16::try_from(lines.len())? + 4, |v| v.height));
+        let popup_area = frame.area().centered(
+            constraint!(==width),
+            constraint!(==self.size.map_or(u16::try_from(lines.len())? + 4, |v| v.height)),
+        );
         frame.render_widget(Clear, popup_area);
 
         if let Some(bg_color) = ctx.config.theme.modal_background_color {
@@ -173,8 +175,8 @@ impl Modal for ConfirmModal<'_> {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: &mut KeyEvent, ctx: &mut Ctx) -> Result<()> {
-        if let Some(action) = key.as_common_action(ctx) {
+    fn handle_key(&mut self, key: &mut ActionEvent, ctx: &mut Ctx) -> Result<()> {
+        if let Some(action) = key.claim_common() {
             match action {
                 CommonAction::Right => {
                     self.button_group_state.next();
@@ -203,7 +205,7 @@ impl Modal for ConfirmModal<'_> {
                 }
                 _ => {}
             }
-        } else if let Some(action) = key.as_global_action(ctx) {
+        } else if let Some(action) = key.claim_global() {
             match action {
                 GlobalAction::NextTab => {
                     self.button_group_state.next();

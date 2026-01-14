@@ -23,6 +23,11 @@ pub enum SongPropertyFile {
     Track,
     Disc,
     Position,
+    SampleRate(),
+    Bits(),
+    Channels(),
+    Added(),
+    LastModified(),
     Other(String),
 }
 
@@ -38,6 +43,11 @@ pub enum SongProperty {
     Track,
     Disc,
     Position,
+    SampleRate(),
+    Bits(),
+    Channels(),
+    Added(),
+    LastModified(),
     Other(String),
 }
 
@@ -129,6 +139,10 @@ pub enum StatusPropertyFile {
         separator: Option<String>,
     },
     ActiveTab,
+    InputBuffer(),
+    SampleRate(),
+    Bits(),
+    Channels(),
 }
 
 #[derive(Debug, Clone, Display, Hash, Eq, PartialEq)]
@@ -185,6 +199,10 @@ pub enum StatusProperty {
         separator: Option<String>,
     },
     ActiveTab,
+    InputBuffer(),
+    SampleRate(),
+    Bits(),
+    Channels(),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,6 +348,11 @@ impl From<SongPropertyFile> for SongProperty {
             SongPropertyFile::Disc => SongProperty::Disc,
             SongPropertyFile::Other(name) => SongProperty::Other(name),
             SongPropertyFile::Position => SongProperty::Position,
+            SongPropertyFile::SampleRate() => SongProperty::SampleRate(),
+            SongPropertyFile::Bits() => SongProperty::Bits(),
+            SongPropertyFile::Channels() => SongProperty::Channels(),
+            SongPropertyFile::Added() => SongProperty::Added(),
+            SongPropertyFile::LastModified() => SongProperty::LastModified(),
         }
     }
 }
@@ -488,6 +511,10 @@ impl TryFrom<StatusPropertyFile> for StatusProperty {
                 StatusProperty::QueueTimeRemaining { separator }
             }
             StatusPropertyFile::ActiveTab => StatusProperty::ActiveTab,
+            StatusPropertyFile::InputBuffer() => StatusProperty::InputBuffer(),
+            StatusPropertyFile::SampleRate() => StatusProperty::SampleRate(),
+            StatusPropertyFile::Bits() => StatusProperty::Bits(),
+            StatusPropertyFile::Channels() => StatusProperty::Channels(),
         })
     }
 }
@@ -568,7 +595,7 @@ impl TryFrom<SongFormatFile> for SongFormat {
     type Error = anyhow::Error;
 
     fn try_from(value: SongFormatFile) -> Result<Self, Self::Error> {
-        let properties: Vec<_> = value.0.into_iter().map(|v| v.try_into()).try_collect()?;
+        let properties: Vec<_> = value.0.into_iter().map(|v| v.convert()).try_collect()?;
         Ok(SongFormat(properties))
     }
 }

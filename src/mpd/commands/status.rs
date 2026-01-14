@@ -20,7 +20,7 @@ pub struct Status {
                                 * version number */
     pub playlistlength: u32, // integer, the length of the playlist
     pub state: State,        // play, stop, or pause
-    pub song: Option<u32>,   /* playlist song number of the current song
+    pub song: Option<usize>, /* playlist song number of the current song
                               * stopped on or playing */
     pub songid: Option<u32>, /* playlist songid of the current song stopped
                               * on or playing */
@@ -45,6 +45,26 @@ pub struct Status {
     pub updating_db: Option<u32>,           // job id
     pub error: Option<String>,              // if there is an error, returns message here
     pub lastloadedplaylist: Option<String>, // last loaded stored playlist
+}
+
+impl Status {
+    pub fn samplerate(&self) -> Option<u32> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.split(':').next().and_then(|rate_str| rate_str.parse().ok()))
+    }
+
+    pub fn bits(&self) -> Option<u32> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.split(':').nth(1).and_then(|bits_str| bits_str.parse().ok()))
+    }
+
+    pub fn channels(&self) -> Option<u32> {
+        self.audio.as_ref().and_then(|audio| {
+            audio.split(':').nth(2).and_then(|channels_str| channels_str.parse().ok())
+        })
+    }
 }
 
 impl FromMpd for Status {
@@ -155,7 +175,7 @@ impl std::str::FromStr for OnOffOneshot {
             "0" => Ok(OnOffOneshot::Off),
             "1" => Ok(OnOffOneshot::On),
             "oneshot" => Ok(OnOffOneshot::Oneshot),
-            val => Err(anyhow!("Received unknown value for OnOffOneshot '{}'", val)),
+            val => Err(anyhow!("Received unknown value for OnOffOneshot '{val}'")),
         }
     }
 }
@@ -177,7 +197,7 @@ impl std::str::FromStr for State {
             "play" => Ok(Self::Play),
             "stop" => Ok(Self::Stop),
             "pause" => Ok(Self::Pause),
-            _ => Err(anyhow!("Invalid State: '{}'", s)),
+            _ => Err(anyhow!("Invalid State: '{s}'")),
         }
     }
 }

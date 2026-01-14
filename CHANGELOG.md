@@ -8,12 +8,47 @@ All notable changes to this project will be documented in this file.
 
 - `AfterCurrentAlbum` and `BeforeCurrentAlbum` to `AddOptions` keybind
 - `order` option to `album_art`, sets whether to check embedded image or cover image file first
+- Added hot reload for lyrics and corresponding `enable_lyrics_hot_reload` config option
+- `enable_lyrics_index` to disable `lyrics_dir` indexing on startup
+- Support abstract socket in `MPD_HOST` and config file on Linux
+- Improved text input fields, supports shortcuts similar to default bash, like ctrl+w to delete a
+word, ctrl+f/b to move forward/backwards etc.
+- `clear` options to keybinds, keep the default keybinds and only override the specified keybinds
+if false
+- Triggering `JumpToCurrent` twice will now center the currently playing song
+- Keybinds now support sequences of keys instead of a single key chord. Existing keybinds should work
+the same.
+- Added `SortByColumn(_)` to sort the queue by the given column. Clicking the table header also sorts
+the queue by the given column.
+- Added `load` and `save` commands to the CLI
+- Added more config options to pane definitions, you can now define border titles, their style, position
+as well as fully custom border symbol sets
+- Added `Bits()`, `SampleRate()` and `Channels()` properties to song and status
+- Downloads from ytdlp not show inside a modal letting you have some basic control over them as well
+- Added `auto_open_downloads` to config to control whether the download modal should open automatically
+after starting a ytdlp download
+- Added `scroll_amount` config option
+- Added `Added()` and `LastModified()` song properties
 
 ### Changed
 
+- **Breaking** Keybinds now only override the defaults. Meaning your configured keybinds are combined
+- **Breaking** `show_song_table_header` has been removed. The queue header is now in a separate `QueueHeader`
+pane. You will need to update your config to include it in your tabs.
+with the default ones. Set `clear` to true to keep the old behavior.
+- **Breaking** `draw_borders` has been deprecated. The `Tabs` pane is no longer affected by this, use the
+- **Breaking** `current_item_style` and `highlighted_item_style` now merge on top of the item's style
+instead of having defaults,
+specify all the style properties (fg, bg, modifiers) to keep the old look
+borders configuration on the pane itself instead. This now only affects borders in the browser panes
+and this will be romeved in the future as well.
+- `Queue` pane no longer has empty space on the sides
 - Moved docs to a new [repository](https://github.com/rmpc-org/rmpc-org.github.io) and [domain](https://rmpc.mierak.dev/)
 - Rmpc now checks for embedded image first and cover image in a file second by default, this can be
 configured with the new `album_art.order` option
+- The queue table should now be more performant for a very large number of items
+- Default keybinds have been updated. This will not affect you if have a properly setup config file.
+- Default theme has been updated. This will not affect you if have a properly setup config file.
 
 ### Fixed
 
@@ -21,6 +56,22 @@ configured with the new `album_art.order` option
 - Fix directories pane not fetching data after using the `Confirm` action to enter a directory
 - Album art (sixel and iterm2) sometimes being aligned to an incorrect pane when in tmux splits
 - Album art (sixel and iterm2) not rendering after detaching and reattaching from tmux session
+- `highlighted_item_style` having unstyled spaces between columns in the queue table
+- rmpc not correctly removing keyboard enhancement flags
+- Unfocusable panes being unable to receive mouse events when put inside a tab
+- Tabs now respect changes in `components` when they change via remote ipc
+- Album art will now be completely disabled when zellij is detected and image method is set to `Auto`.
+You can still force other image backend via config.
+- yt-dlp integration will now try to issue a database update if the downloaded file cannot be found,
+should fix cases with `cache_dir` being set inside MPD's music directory
+- Added missing confirmation when deleting playlist/songs from playlist
+- Some very minor speedups in queue with very large queue sizes
+- `ScanStatus` not working
+
+### Removed
+
+- `Save` and `AddToPlaylist` queue actions. These have been undocumented and mostly unused. Use
+the `Save()` navigation action instead.
 
 ## [0.10.0] - 2025-11-11
 
@@ -86,8 +137,8 @@ going to the next item
 - Remote commands now check for `$PID` env variable, meaning `--pid` argument is no longer needed for
 remote commands inside scripts triggered by rmpc
 - `AddToPlaylist` binding handles marked songs rather than only the one under your cursor.
-- Paused playback state is now kept by default when using the `NextTrack/PreviousTrack` keybinds. Use 
-`keep_state_on_song_change` to disable this 
+- Paused playback state is now kept by default when using the `NextTrack/PreviousTrack` keybinds. Use
+`keep_state_on_song_change` to disable this
 - Default theme now includes lyrics pane above the album art on queue tab
 - Browsers now properly use case insensitive sorting
 - Refactored and improved image backend detection

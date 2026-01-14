@@ -16,8 +16,12 @@ use self::{
     scrollbar::ScrollbarConfig,
     style::{StringColor, ToConfigOr},
 };
-use crate::mpd::commands::metadata_tag::MetadataTag;
+use crate::{
+    config::theme::borders::{BorderSetLib, BorderSetLibFile},
+    mpd::commands::metadata_tag::MetadataTag,
+};
 
+pub mod borders;
 pub mod cava;
 mod header;
 pub mod level_styles;
@@ -26,7 +30,7 @@ mod progress_bar;
 pub mod properties;
 pub mod queue_table;
 mod scrollbar;
-mod style;
+pub mod style;
 pub mod volume_slider;
 
 pub use style::{ConfigColor, Modifiers, StyleFile};
@@ -63,9 +67,9 @@ pub struct UiConfig {
     pub progress_bar: ProgressBarConfig,
     pub tab_bar: TabBar,
     pub scrollbar: Option<ScrollbarConfig>,
-    pub show_song_table_header: bool,
     pub song_table_format: Vec<SongTableColumn>,
     pub song_table_album_separator: AlbumSeparator,
+    pub header_column_widths: [u16; 3],
     pub header: HeaderConfig,
     #[debug("{}", default_album_art.len())]
     pub default_album_art: &'static [u8],
@@ -76,6 +80,7 @@ pub struct UiConfig {
     pub level_styles: LevelStyles,
     pub lyrics: LyricsConfig,
     pub cava: CavaTheme,
+    pub border_symbol_sets: BorderSetLib,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,23 +102,31 @@ pub struct UiConfigFile {
     pub(super) preview_label_style: StyleFile,
     #[serde(default = "defaults::default_preview_metaga_group_heading_style")]
     pub(super) preview_metadata_group_style: StyleFile,
+    #[deprecated]
     pub(super) header_background_color: Option<String>,
     pub(super) modal_background_color: Option<String>,
     #[serde(default)]
     pub(super) modal_backdrop: bool,
     pub(super) borders_style: Option<StyleFile>,
+    #[serde(default = "defaults::highlighted_item_style")]
     pub(super) highlighted_item_style: Option<StyleFile>,
+    #[serde(default = "defaults::current_item_style")]
     pub(super) current_item_style: Option<StyleFile>,
     pub(super) highlight_border_style: Option<StyleFile>,
+    #[deprecated]
+    #[serde(default)]
     pub(super) show_song_table_header: bool,
     pub(super) song_table_format: QueueTableColumnsFile,
     #[serde(default)]
     pub(super) song_table_album_separator: AlbumSeparator,
+    #[serde(default = "defaults::default_header_column_widths")]
+    pub(super) header_column_widths: Vec<u16>,
+    #[serde(default)]
     pub(super) header: HeaderConfigFile,
     pub(super) default_album_art_path: Option<String>,
     #[serde(default)]
     pub(super) layout: PaneOrSplitFile,
-    #[serde(default)]
+    #[serde(default = "defaults::components")]
     pub(super) components: HashMap<String, PaneOrSplitFile>,
     #[serde(default = "defaults::default_tag_separator")]
     pub(super) format_tag_separator: String,
@@ -125,6 +138,8 @@ pub struct UiConfigFile {
     pub(super) lyrics: LyricsConfigFile,
     #[serde(default)]
     pub(super) cava: CavaThemeFile,
+    #[serde(default)]
+    pub border_symbol_sets: BorderSetLibFile,
 }
 
 impl Default for UiConfigFile {
@@ -136,7 +151,8 @@ impl Default for UiConfigFile {
             background_color: None,
             text_color: None,
             header_background_color: None,
-            show_song_table_header: true,
+            show_song_table_header: false,
+            header_column_widths: vec![30, 40, 30],
             header: HeaderConfigFile::default(),
             modal_background_color: None,
             modal_backdrop: false,
@@ -198,9 +214,10 @@ impl Default for UiConfigFile {
                 modifiers: Some(Modifiers::Bold),
             },
             level_styles: LevelStylesFile::default(),
-            components: HashMap::default(),
+            components: defaults::components(),
             lyrics: LyricsConfigFile::default(),
             cava: CavaThemeFile::default(),
+            border_symbol_sets: BorderSetLibFile::default(),
         }
     }
 }
@@ -304,6 +321,7 @@ impl TagResolutionStrategy {
 // truly missing or a different kind of error occurs will the conversion fail.
 fn convert_components(
     value: HashMap<String, PaneOrSplitFile>,
+    border_set_lib: &BorderSetLib,
 ) -> Result<HashMap<String, SizedPaneOrSplit>> {
     let mut result = HashMap::new();
     let mut components = value.into_iter().collect_vec();
@@ -314,7 +332,7 @@ fn convert_components(
     loop {
         let current = components.get(i.checked_rem(components.len()).unwrap_or(0));
         match current {
-            Some((name, pane)) => match pane.convert(&result) {
+            Some((name, pane)) => match pane.convert(&result, border_set_lib) {
                 Ok(v) => {
                     result.insert(name.to_owned(), v);
                     components.remove(i % components.len());
@@ -361,10 +379,11 @@ impl TryFrom<UiConfigFile> for UiConfig {
         let bg_color = StringColor(value.background_color).to_color()?;
         let header_bg_color = StringColor(value.header_background_color).to_color()?.or(bg_color);
         let fallback_border_fg = Color::White;
-        let components = convert_components(value.components)?;
+        let border_set_lib: BorderSetLib = value.border_symbol_sets.try_into()?;
+        let components = convert_components(value.components, &border_set_lib)?;
 
         Ok(Self {
-            layout: value.layout.convert(&components)?,
+            layout: value.layout.convert(&components, &border_set_lib)?,
             components,
             cava: value.cava.into_config(bg_color)?,
             background_color: bg_color,
@@ -378,18 +397,19 @@ impl TryFrom<UiConfigFile> for UiConfig {
             text_color: StringColor(value.text_color).to_color()?,
             header_background_color: header_bg_color,
             borders_style: value.borders_style.to_config_or(Some(fallback_border_fg), None)?,
-            highlighted_item_style: value
-                .highlighted_item_style
-                .to_config_or(Some(Color::Blue), None)?,
             highlight_border_style: value
                 .highlight_border_style
                 .to_config_or(Some(Color::Blue), None)?,
             symbols: value.symbols.into(),
-            show_song_table_header: value.show_song_table_header,
             scrollbar: value.scrollbar.map(|sc| sc.into_config(fallback_border_fg)).transpose()?,
             progress_bar: value.progress_bar.into_config()?,
             song_table_format: TryInto::<QueueTableColumns>::try_into(value.song_table_format)?.0,
             song_table_album_separator: value.song_table_album_separator,
+            header_column_widths: [
+                value.header_column_widths[0],
+                value.header_column_widths[1],
+                value.header_column_widths[2],
+            ],
             header: value.header.try_into()?,
             column_widths: [
                 value.browser_column_widths[0],
@@ -403,9 +423,8 @@ impl TryFrom<UiConfigFile> for UiConfig {
                     .to_config_or(Some(Color::Black), Some(Color::Blue))?,
                 inactive_style: value.tab_bar.inactive_style.to_config_or(None, header_bg_color)?,
             },
-            current_item_style: value
-                .current_item_style
-                .to_config_or(Some(Color::Black), Some(Color::Blue))?,
+            highlighted_item_style: value.highlighted_item_style.to_config_or(None, None)?,
+            current_item_style: value.current_item_style.to_config_or(None, None)?,
             default_album_art: value.default_album_art_path.map_or(
                 Ok(DEFAULT_ART as &'static [u8]),
                 |path| -> Result<_> {
@@ -420,6 +439,7 @@ impl TryFrom<UiConfigFile> for UiConfig {
                 .to_config_or(None, None)?,
             level_styles: value.level_styles.try_into()?,
             lyrics: value.lyrics.into(),
+            border_symbol_sets: border_set_lib,
         })
     }
 }
