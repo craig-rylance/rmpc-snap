@@ -1,15 +1,8 @@
-use std::{
-    collections::HashMap,
-    io::Read,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use address::MpdPassword;
 use album_art::{AlbumArtConfig, AlbumArtConfigFile, ImageMethodFile};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use artists::{Artists, ArtistsFile};
 use cava::{Cava, CavaFile};
 use clap::Parser;
@@ -36,23 +29,23 @@ pub mod tabs;
 pub mod theme;
 
 pub use address::MpdAddress;
-pub use search::Search;
+pub use search::{FilterKindFile, Search};
 
 use self::{
     keys::{KeyConfig, KeyConfigFile},
-    theme::{ConfigColor, UiConfig, UiConfigFile},
+    theme::{ConfigColor, UiConfig},
 };
 use crate::{
     config::{
         tabs::{SizedPaneOrSplit, Tab, TabName},
         utils::tilde_expand_path,
     },
-    shared::{lrc::LrcOffset, terminal::TERMINAL},
+    shared::{duration_format::DurationFormat, lrc::LrcOffset, terminal::TERMINAL},
     tmux,
 };
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub address: MpdAddress,
     pub password: Option<MpdPassword>,
@@ -96,6 +89,16 @@ pub struct Config {
     pub directories_sort: Arc<SortOptions>,
     pub cava: Cava,
     pub auto_open_downloads: bool,
+    pub extra_yt_dlp_args: Vec<String>,
+    pub duration_format: DurationFormat,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        ConfigFile::default()
+            .into_config(UiConfig::default(), None, None, true)
+            .expect("Default config should be valid")
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -108,92 +111,53 @@ pub enum ShowPlaylistsMode {
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ConfigFile {
-    #[serde(default = "defaults::mpd_address")]
     pub address: String,
-    #[serde(default)]
     password: Option<String>,
-    #[serde(default)]
     cache_dir: Option<PathBuf>,
-    #[serde(default)]
     lyrics_dir: Option<String>,
-    #[serde(default = "defaults::i64::<0>")]
     lyrics_offset_ms: i64,
-    #[serde(default = "defaults::bool::<true>")]
     enable_lyrics_index: bool,
-    #[serde(default = "defaults::bool::<false>")]
     enable_lyrics_hot_reload: bool,
-    #[serde(default)]
     pub theme: Option<String>,
-    #[serde(default = "defaults::u8::<5>")]
     volume_step: u8,
-    #[serde(default = "defaults::u32::<30>")]
     pub max_fps: u32,
-    #[serde(default = "defaults::usize::<0>")]
     scrolloff: usize,
-    #[serde(default = "defaults::bool::<false>")]
     wrap_navigation: bool,
-    #[serde(default = "defaults::default_progress_update_interval_ms")]
     status_update_interval_ms: Option<u64>,
-    #[serde(default = "defaults::bool::<false>")]
     select_current_song_on_change: bool,
-    #[serde(default = "defaults::bool::<false>")]
     center_current_song_on_change: bool,
-    #[serde(default = "defaults::bool::<false>")]
     reflect_changes_to_playlist: bool,
-    #[serde(default)]
     rewind_to_start_sec: Option<u64>,
-    #[serde(default = "defaults::bool::<true>")]
     keep_state_on_song_change: bool,
-    #[serde(default = "defaults::u64::<10_000>")]
     mpd_read_timeout_ms: u64,
-    #[serde(default = "defaults::u64::<5_000>")]
     mpd_write_timeout_ms: u64,
-    #[serde(default)]
     mpd_idle_read_timeout_ms: Option<u64>,
-    #[serde(default = "defaults::bool::<true>")]
     enable_mouse: bool,
-    #[serde(default = "defaults::usize::<1>")]
     scroll_amount: usize,
-    #[serde(default = "defaults::bool::<true>")]
     pub enable_config_hot_reload: bool,
-    #[serde(default)]
     keybinds: KeyConfigFile,
-    #[serde(default = "defaults::u64::<1000>")]
     pub normal_timeout_ms: u64,
-    #[serde(default = "defaults::u64::<1000>")]
     pub insert_timeout_ms: u64,
     // Deprecated
-    #[serde(default)]
     image_method: Option<ImageMethodFile>,
-    #[serde(default)]
     album_art_max_size_px: Size,
-    #[serde(default)]
     pub album_art: AlbumArtConfigFile,
-    #[serde(default)]
     on_song_change: Option<Vec<String>>,
-    #[serde(default)]
     exec_on_song_change_at_start: bool,
-    #[serde(default)]
     on_resize: Option<Vec<String>>,
-    #[serde(default)]
     search: SearchFile,
-    #[serde(default)]
     artists: ArtistsFile,
-    #[serde(default)]
     tabs: TabsFile,
-    #[serde(default)]
     pub ignore_leading_the: bool,
-    #[serde(default)]
     pub browser_song_sort: Vec<SongPropertyFile>,
-    #[serde(default)]
     pub show_playlists_in_browser: ShowPlaylistsMode,
-    #[serde(default)]
     pub directories_sort: SortModeFile,
-    #[serde(default)]
     pub cava: CavaFile,
-    #[serde(default = "defaults::bool::<true>")]
+    pub extra_yt_dlp_args: Vec<String>,
     pub auto_open_downloads: bool,
+    pub duration_format: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
@@ -239,7 +203,7 @@ impl Default for ConfigFile {
             center_current_song_on_change: false,
             album_art_max_size_px: Size::default(),
             album_art: AlbumArtConfigFile {
-                disabled_protocols: defaults::disabled_album_art_protos(),
+                disabled_protocols: vec!["http://".to_string(), "https://".to_string()],
                 ..Default::default()
             },
             on_song_change: None,
@@ -261,7 +225,9 @@ impl Default for ConfigFile {
             reflect_changes_to_playlist: false,
             cava: CavaFile::default(),
             show_playlists_in_browser: ShowPlaylistsMode::default(),
+            extra_yt_dlp_args: Vec::new(),
             auto_open_downloads: true,
+            duration_format: "%m:%S".to_string(),
         }
     }
 }
@@ -281,135 +247,31 @@ impl Config {
             .unique()
             .collect_vec()
     }
-}
 
-#[derive(Debug)]
-pub enum DeserError {
-    Deserialization(serde_path_to_error::Error<ron::Error>),
-    NotFound(std::io::Error),
-    Io(std::io::Error),
-    Ron(ron::error::SpannedError),
-    Generic(anyhow::Error),
-}
-
-impl std::error::Error for DeserError {}
-impl std::fmt::Display for DeserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeserError::Deserialization(err) => {
-                write!(
-                    f,
-                    "Failed to deserialize config at path: '{}'.\nError: '{}'.",
-                    err.path(),
-                    err.inner()
-                )
-            }
-            DeserError::NotFound(err) => write!(f, "Failed to read config file. Error: '{err}'"),
-            DeserError::Io(err) => write!(f, "Failed to read config file. Error: '{err}'"),
-            DeserError::Ron(err) => {
-                write!(f, "Failed to parse config file. Error: '{err}'")
-            }
-            DeserError::Generic(err) => write!(f, "Failed to read config file. Error: '{err:#}'"),
-        }
+    pub fn default_cli(args: &mut Args) -> Config {
+        ConfigFile::default()
+            .into_config(
+                UiConfig::default(),
+                std::mem::take(&mut args.address),
+                std::mem::take(&mut args.password),
+                false,
+            )
+            .expect("Default config should always convert")
     }
-}
 
-impl From<std::io::Error> for DeserError {
-    fn from(value: std::io::Error) -> Self {
-        if value.kind() == std::io::ErrorKind::NotFound {
-            Self::NotFound(value)
-        } else {
-            Self::Io(value)
-        }
-    }
-}
-
-impl From<ron::error::SpannedError> for DeserError {
-    fn from(value: ron::error::SpannedError) -> Self {
-        Self::Ron(value)
-    }
-}
-
-impl From<serde_path_to_error::Error<ron::Error>> for DeserError {
-    fn from(value: serde_path_to_error::Error<ron::Error>) -> Self {
-        Self::Deserialization(value)
-    }
-}
-
-impl From<anyhow::Error> for DeserError {
-    fn from(value: anyhow::Error) -> Self {
-        Self::Generic(value)
+    pub fn default_with_album_art_check() -> Result<Config> {
+        ConfigFile::default().into_config(UiConfig::default(), None, None, false)
     }
 }
 
 impl ConfigFile {
-    pub fn read(path: &PathBuf) -> Result<Self, DeserError> {
-        let file = std::fs::File::open(path)?;
-        let mut read = std::io::BufReader::new(file);
-        let mut buf = Vec::new();
-        read.read_to_end(&mut buf)?;
-        let result: Result<ConfigFile, _> =
-            serde_path_to_error::deserialize(&mut ron::de::Deserializer::from_bytes(&buf)?);
-
-        Ok(result?)
-    }
-
-    pub fn theme_path(&self, config_dir: &Path) -> Option<PathBuf> {
-        self.theme.as_ref().and_then(|theme| {
-            let theme_paths = [
-                config_dir.join("themes").join(format!("{theme}.ron")),
-                config_dir.join("themes").join(theme),
-                config_dir.join(format!("{theme}.ron")),
-                config_dir.join(theme),
-                PathBuf::from(tilde_expand(theme).into_owned()),
-            ];
-            theme_paths.into_iter().find(|theme_path| theme_path.is_file())
-        })
-    }
-
-    fn read_theme(&self, config_dir: &Path) -> Result<UiConfigFile, DeserError> {
-        self.theme_path(config_dir).map_or_else(
-            || Ok(UiConfigFile::default()),
-            |path| {
-                let file = std::fs::File::open(&path)?;
-                let mut read = std::io::BufReader::new(file);
-                let mut buf = Vec::new();
-                read.read_to_end(&mut buf)?;
-                let theme: UiConfigFile = serde_path_to_error::deserialize(
-                    &mut ron::de::Deserializer::from_bytes(&buf)?,
-                )?;
-
-                Ok(theme)
-            },
-        )
-    }
-
     pub fn into_config(
         self,
-        config_path: Option<&Path>,
-        theme_cli: Option<&Path>,
+        theme: UiConfig,
         address_cli: Option<String>,
         password_cli: Option<String>,
         skip_album_art_check: bool,
-    ) -> Result<Config, DeserError> {
-        let theme = if let Some(path) = theme_cli {
-            let file = std::fs::File::open(path).with_context(|| {
-                format!("Failed to open theme file {:?}", path.to_string_lossy())
-            })?;
-            let read = std::io::BufReader::new(file);
-            ron::de::from_reader(read)?
-        } else if let Some(path) = config_path {
-            let config_dir = path.parent().with_context(|| {
-                format!("Expected config path to have parent directory. Path: '{}'", path.display())
-            })?;
-
-            self.read_theme(config_dir)?
-        } else {
-            UiConfigFile::default()
-        };
-
-        let theme = UiConfig::try_from(theme)?;
-
+    ) -> Result<Config> {
         let original_tabs_definition = self.tabs.clone();
         let tabs: Tabs = self.tabs.convert(&theme.components, &theme.border_symbol_sets)?;
         let active_panes = Config::calc_active_panes(&tabs.tabs, &theme.layout);
@@ -505,7 +367,9 @@ impl ConfigFile {
             keep_state_on_song_change: self.keep_state_on_song_change,
             reflect_changes_to_playlist: self.reflect_changes_to_playlist,
             cava: self.cava.into(),
+            extra_yt_dlp_args: self.extra_yt_dlp_args,
             auto_open_downloads: self.auto_open_downloads,
+            duration_format: DurationFormat::parse(&self.duration_format)?,
         };
 
         if skip_album_art_check {

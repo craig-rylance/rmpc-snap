@@ -10,7 +10,7 @@ use crate::{
         lrc::LrcIndex,
         macros::try_skip,
         mpd_query::MpdCommand as QueryCmd,
-        ytdlp::YtDlp,
+        ytdlp::{YtDlp, YtDlpDownloadError},
     },
 };
 
@@ -21,7 +21,8 @@ pub fn init(
     config: Arc<Config>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new().name("work".to_owned()).spawn(move || {
-        let ytdlp = config.cache_dir.as_ref().map(|dir| YtDlp::new(dir.clone()));
+        let ytdlp =
+            config.cache_dir.as_ref().map(|dir| YtDlp::new(dir.clone(), &config.extra_yt_dlp_args));
         let cli_config = config.as_ref().into();
         while let Ok(req) = work_rx.recv() {
             let result = handle_work_request(req, &client_tx, &cli_config, ytdlp.as_ref());
@@ -69,7 +70,12 @@ fn handle_work_request(
         }
         WorkRequest::YtDlpDownload { id, url } => {
             let Some(ytdlp) = ytdlp else {
-                anyhow::bail!("Youtube support requires 'cache_dir' to be configured")
+                return Ok(WorkDone::YtDlpDownloaded {
+                    id,
+                    result: Err(YtDlpDownloadError::InvalidConfig(
+                        "Youtube support requires 'cache_dir' to be configured",
+                    )),
+                });
             };
 
             let result = ytdlp.download_single(&url);

@@ -1,29 +1,45 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::{Config, ConfigFile, MpdAddress, address::MpdPassword, utils::tilde_expand};
 use crate::config::utils::tilde_expand_path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct CliConfigFile {
-    #[serde(default = "super::defaults::mpd_address")]
     pub address: String,
-    #[serde(default)]
     password: Option<String>,
-    #[serde(default)]
     cache_dir: Option<PathBuf>,
-    #[serde(default)]
     lyrics_dir: Option<String>,
+    extra_yt_dlp_args: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+impl Default for CliConfigFile {
+    fn default() -> Self {
+        Self {
+            address: "127.0.0.1:6600".to_string(),
+            password: None,
+            cache_dir: None,
+            lyrics_dir: None,
+            extra_yt_dlp_args: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CliConfig {
     pub address: MpdAddress,
     pub password: Option<MpdPassword>,
     pub cache_dir: Option<PathBuf>,
     pub lyrics_dir: Option<String>,
+    pub extra_yt_dlp_args: Vec<String>,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        CliConfigFile::default().into_config(None, None)
+    }
 }
 
 impl From<ConfigFile> for CliConfigFile {
@@ -33,6 +49,7 @@ impl From<ConfigFile> for CliConfigFile {
             password: value.password,
             cache_dir: value.cache_dir,
             lyrics_dir: value.lyrics_dir,
+            extra_yt_dlp_args: value.extra_yt_dlp_args,
         }
     }
 }
@@ -44,6 +61,7 @@ impl From<Config> for CliConfig {
             password: value.password,
             cache_dir: value.cache_dir,
             lyrics_dir: value.lyrics_dir,
+            extra_yt_dlp_args: value.extra_yt_dlp_args,
         }
     }
 }
@@ -55,19 +73,12 @@ impl From<&Config> for CliConfig {
             password: value.password.clone(),
             cache_dir: value.cache_dir.clone(),
             lyrics_dir: value.lyrics_dir.clone(),
+            extra_yt_dlp_args: value.extra_yt_dlp_args.clone(),
         }
     }
 }
 
 impl CliConfigFile {
-    pub fn read(path: &PathBuf) -> Result<Self> {
-        let file = std::fs::File::open(path)?;
-        let read = std::io::BufReader::new(file);
-        let config: CliConfigFile = ron::de::from_reader(read)?;
-
-        Ok(config)
-    }
-
     pub fn into_config(
         self,
         address_cli: Option<String>,
@@ -84,6 +95,7 @@ impl CliConfigFile {
             }),
             address,
             password,
+            extra_yt_dlp_args: self.extra_yt_dlp_args,
         }
     }
 }

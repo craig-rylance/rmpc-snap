@@ -17,7 +17,6 @@ use actions::{CommonActionFile, GlobalActionFile, QueueActionsFile};
 pub use key::Key;
 use serde::{Deserialize, Serialize};
 
-use super::defaults;
 use crate::config::keys::{
     actions::{DuplicateStrategy, RateKind, SaveKind},
     key::KeySequence,
@@ -39,9 +38,10 @@ pub struct KeyConfig {
     pub queue: HashMap<KeySequence, QueueActions>,
 }
 
+// It is important here that the deserialization does not put in filled key maps
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct KeyConfigFile {
-    #[serde(default = "defaults::bool::<false>")]
+    #[serde(default)]
     pub clear: bool,
     #[serde(default)]
     pub global: HashMap<KeySequence, GlobalActionFile>,

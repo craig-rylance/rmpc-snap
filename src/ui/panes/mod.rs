@@ -20,13 +20,16 @@ use ratatui::{
     Frame,
     layout::Layout,
     prelude::Rect,
+    style::Color,
     text::{Line, Span},
     widgets::Block,
 };
 use search::SearchPane;
-use strum::Display;
+use strum::{Display, IntoDiscriminant};
 use tabs::TabsPane;
 use tag_browser::TagBrowserPane;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 use volume::VolumePane;
 
 #[cfg(debug_assertions)]
@@ -65,7 +68,7 @@ use crate::{
     },
     ui::{
         input::InputResultEvent,
-        panes::queue_header::QueueHeaderPane,
+        panes::{empty::EmptyPane, queue_header::QueueHeaderPane},
         widgets::header::PropertyTemplates,
     },
 };
@@ -74,6 +77,7 @@ pub mod album_art;
 pub mod albums;
 pub mod cava;
 pub mod directories;
+pub mod empty;
 #[cfg(debug_assertions)]
 pub mod frame_count;
 pub mod header;
@@ -113,6 +117,7 @@ pub enum Panes<'pane_ref, 'pane> {
     Property(PropertyPane<'pane_ref>),
     Others(&'pane_ref mut Box<dyn BoxedPane>),
     Cava(&'pane_ref mut CavaPane),
+    Empty(&'pane_ref mut EmptyPane),
 }
 
 pub trait BoxedPane: Pane + std::fmt::Debug {}
@@ -139,6 +144,7 @@ pub struct PaneContainer<'panes> {
     pub cava: CavaPane,
     #[cfg(debug_assertions)]
     pub frame_count: FrameCountPane,
+    pub empty: EmptyPane,
     pub others: HashMap<PaneType, Box<dyn BoxedPane>>,
 }
 
@@ -163,6 +169,7 @@ impl<'panes> PaneContainer<'panes> {
             cava: CavaPane::new(ctx),
             #[cfg(debug_assertions)]
             frame_count: FrameCountPane::new(),
+            empty: EmptyPane,
             others: Self::init_other_panes(ctx).collect(),
         })
     }
@@ -232,6 +239,7 @@ impl<'panes> PaneContainer<'panes> {
                     .with_context(|| format!("expected pane to be defined {p:?}"))?,
             )),
             PaneType::Cava => Ok(Panes::Cava(&mut self.cava)),
+            PaneType::Empty => Ok(Panes::Empty(&mut self.empty)),
         }
     }
 }
@@ -260,6 +268,7 @@ macro_rules! pane_call {
             Panes::Property(s) => s.$fn($($param),+),
             Panes::Others(s) => s.$fn($($param),+),
             Panes::Cava(s) => s.$fn($($param),+),
+            Panes::Empty(s) => s.$fn($($param),+),
         }
     }
 }
@@ -402,7 +411,7 @@ pub(crate) mod browser {
                         start_of_line_spacer.clone(),
                         Span::styled("Duration", key_style),
                         separator.clone(),
-                        Span::from(duration.as_secs().to_string()),
+                        Span::from(ctx.config.duration_format.format(duration.as_secs())),
                     ])
                     .into(),
                 );
@@ -454,7 +463,7 @@ pub(crate) mod browser {
 
             let mut result = vec![info_group, tags_group];
 
-            let stickers = ctx.song_stickers(&self.file);
+            let stickers = ctx.song_stickers_if_supported(&self.file);
             if let Some(stickers) = stickers
                 && !stickers.is_empty()
             {
@@ -592,97 +601,60 @@ impl Song {
         return false;
     }
 
-    fn default_as_line_ellipsized<'song, 'stickers: 'song>(
+    fn default_as_line<'song, 'stickers: 'song>(
         &'song self,
         format: &Property<SongProperty>,
-        max_len: usize,
-        symbols: &SymbolsConfig,
         tag_separator: &str,
         strategy: TagResolutionStrategy,
         ctx: &'stickers Ctx,
     ) -> Option<Line<'song>> {
-        format.default.as_ref().and_then(|f| {
-            self.as_line_ellipsized(f.as_ref(), max_len, symbols, tag_separator, strategy, ctx)
-        })
+        format.default.as_ref().and_then(|f| self.as_line(f.as_ref(), tag_separator, strategy, ctx))
     }
 
-    pub fn as_line_ellipsized<'song, 'stickers: 'song>(
+    pub fn as_line<'song, 'stickers: 'song>(
         &'song self,
         format: &Property<SongProperty>,
-        max_len: usize,
-        symbols: &SymbolsConfig,
         tag_separator: &str,
         strategy: TagResolutionStrategy,
         ctx: &'stickers Ctx,
     ) -> Option<Line<'song>> {
         let style = format.style.unwrap_or_default();
         match &format.kind {
-            PropertyKindOrText::Text(value) => {
-                Some(Line::styled((*value).ellipsize(max_len, symbols).to_string(), style))
-            }
+            PropertyKindOrText::Text(value) => Some(Line::styled(value.clone(), style)),
             PropertyKindOrText::Sticker(key) => ctx
                 .song_stickers(&self.file)
                 .and_then(|s| s.get(key))
-                .map(|sticker| Line::styled(sticker.ellipsize(max_len, symbols), style))
+                .map(|sticker| Line::styled(sticker, style))
                 .or_else(|| {
                     format.default.as_ref().and_then(|format| {
-                        self.as_line_ellipsized(
-                            format.as_ref(),
-                            max_len,
-                            symbols,
-                            tag_separator,
-                            strategy,
-                            ctx,
-                        )
+                        self.as_line(format.as_ref(), tag_separator, strategy, ctx)
                     })
                 }),
             PropertyKindOrText::Property(property) => {
                 self.format(property, tag_separator, strategy).map_or_else(
-                    || {
-                        self.default_as_line_ellipsized(
-                            format,
-                            max_len,
-                            symbols,
-                            tag_separator,
-                            strategy,
-                            ctx,
-                        )
-                    },
-                    |v| Some(Line::styled(v.ellipsize(max_len, symbols).into_owned(), style)),
+                    || self.default_as_line(format, tag_separator, strategy, ctx),
+                    |v| Some(Line::styled(v, style)),
                 )
             }
             PropertyKindOrText::Group(group) => {
                 let mut buf = Line::default().style(style);
                 for grformat in group {
-                    if let Some(res) = self.as_line_ellipsized(
-                        grformat,
-                        max_len,
-                        symbols,
-                        tag_separator,
-                        strategy,
-                        ctx,
-                    ) {
+                    if let Some(res) = self.as_line(grformat, tag_separator, strategy, ctx) {
                         for span in res.spans {
                             let span_style = span.style;
                             buf.push_span(span.style(res.style).patch_style(span_style));
                         }
                     } else {
-                        return format.default.as_ref().and_then(|format| {
-                            self.as_line_ellipsized(
-                                format,
-                                max_len,
-                                symbols,
-                                tag_separator,
-                                strategy,
-                                ctx,
-                            )
-                        });
+                        return format
+                            .default
+                            .as_ref()
+                            .and_then(|format| self.as_line(format, tag_separator, strategy, ctx));
                     }
                 }
                 return Some(buf);
             }
             PropertyKindOrText::Transform(Transform::Replace { content, replacements }) => self
-                .as_line_ellipsized(content, max_len, symbols, tag_separator, strategy, ctx)
+                .as_line(content, tag_separator, strategy, ctx)
                 .and_then(|line| {
                     let mut content = String::new();
                     for span in &line.spans {
@@ -690,45 +662,25 @@ impl Song {
                     }
 
                     if let Some(replacement) = replacements.get(&content) {
-                        return self
-                            .as_line_ellipsized(
-                                replacement,
-                                max_len,
-                                symbols,
-                                tag_separator,
-                                strategy,
-                                ctx,
-                            )
-                            .or_else(|| {
+                        return self.as_line(replacement, tag_separator, strategy, ctx).or_else(
+                            || {
                                 replacement.default.as_ref().and_then(|format| {
-                                    self.as_line_ellipsized(
-                                        format,
-                                        max_len,
-                                        symbols,
-                                        tag_separator,
-                                        strategy,
-                                        ctx,
-                                    )
+                                    self.as_line(format, tag_separator, strategy, ctx)
                                 })
-                            });
+                            },
+                        );
                     }
 
                     Some(line)
                 })
                 .or_else(|| {
-                    format.default.as_ref().and_then(|format| {
-                        self.as_line_ellipsized(
-                            format,
-                            max_len,
-                            symbols,
-                            tag_separator,
-                            strategy,
-                            ctx,
-                        )
-                    })
+                    format
+                        .default
+                        .as_ref()
+                        .and_then(|format| self.as_line(format, tag_separator, strategy, ctx))
                 }),
             PropertyKindOrText::Transform(Transform::Truncate { content, length, from_start }) => {
-                self.as_line_ellipsized(content, max_len, symbols, tag_separator, strategy, ctx)
+                self.as_line(content, tag_separator, strategy, ctx)
                     .map(|mut line| {
                         let mut buf = VecDeque::new();
                         let mut remaining_len = *length;
@@ -754,19 +706,80 @@ impl Song {
                         line
                     })
                     .or_else(|| {
-                        format.default.as_ref().and_then(|format| {
-                            self.as_line_ellipsized(
-                                format,
-                                max_len,
-                                symbols,
-                                tag_separator,
-                                strategy,
-                                ctx,
-                            )
-                        })
+                        format
+                            .default
+                            .as_ref()
+                            .and_then(|format| self.as_line(format, tag_separator, strategy, ctx))
                     })
             }
         }
+    }
+
+    pub fn as_line_ellipsized<'song, 'stickers: 'song>(
+        &'song self,
+        format: &Property<SongProperty>,
+        max_len: usize,
+        symbols: &SymbolsConfig,
+        tag_separator: &str,
+        strategy: TagResolutionStrategy,
+        ctx: &'stickers Ctx,
+    ) -> Option<Line<'song>> {
+        let mut line = self.as_line(format, tag_separator, strategy, ctx)?;
+
+        let mut remaining = max_len;
+        let mut idx = 0;
+
+        let ellipsis_width = symbols.ellipsis.width();
+        while remaining > 0 {
+            let Some(span) = line.spans.get_mut(idx) else {
+                break;
+            };
+
+            let sw = span.width();
+
+            if sw < remaining {
+                remaining -= sw;
+                idx += 1;
+                continue;
+            }
+
+            if sw == remaining {
+                line.spans.truncate(idx + 1);
+                break;
+            }
+
+            if remaining < ellipsis_width {
+                // No space even for the configured ellipsis, just default the whole line to "…"
+                span.content = Cow::Borrowed("…");
+                line.spans.truncate(idx + 1);
+                break;
+            }
+
+            let target = remaining - ellipsis_width;
+
+            let mut owned = std::mem::take(&mut span.content).into_owned();
+
+            let mut acc = 0;
+            let mut cut_at_byte = 0;
+
+            for (i, g) in owned.grapheme_indices(true) {
+                let gw = g.width();
+                if acc + gw > target {
+                    cut_at_byte = i;
+                    break;
+                }
+                acc += gw;
+                cut_at_byte = i + g.len();
+            }
+
+            owned.truncate(cut_at_byte);
+            owned.push_str(&symbols.ellipsis);
+            span.content = Cow::Owned(owned);
+            line.spans.truncate(idx + 1);
+            break;
+        }
+
+        Some(line)
     }
 }
 
@@ -1037,6 +1050,10 @@ impl Property<PropertyKind> {
                 StatusProperty::InputBuffer() => {
                     Some(Either::Left(Span::styled(ctx.key_resolver.buffer_to_string(), style)))
                 }
+                StatusProperty::InputMode() => Some(Either::Left(Span::styled(
+                    ctx.input.mode().discriminant().to_string(),
+                    style,
+                ))),
                 StatusProperty::SampleRate() => {
                     status.samplerate().map(|v| Either::Left(Span::styled(v.to_string(), style)))
                 }
@@ -1166,17 +1183,17 @@ impl SizedPaneOrSplit {
     pub fn for_each_pane(
         &self,
         area: Rect,
-        pane_callback: &mut impl FnMut(&ConfigPane, Rect, Block, Rect) -> Result<()>,
+        pane_callback: &mut impl FnMut(&ConfigPane, Rect, Block, Rect, Option<Color>) -> Result<()>,
         ctx: &Ctx,
     ) -> Result<()> {
         self.for_each_pane_custom_data(
             area,
             (),
-            &mut |pane, pane_area, block, block_area, ()| {
-                pane_callback(pane, pane_area, block, block_area)?;
+            &mut |pane, pane_area, block, block_area, background_color, ()| {
+                pane_callback(pane, pane_area, block, block_area, background_color)?;
                 Ok(())
             },
-            &mut |_, _, ()| Ok(()),
+            &mut |_, _, _, ()| Ok(()),
             ctx,
         )
     }
@@ -1185,8 +1202,15 @@ impl SizedPaneOrSplit {
         &self,
         area: Rect,
         mut custom_data: T,
-        pane_callback: &mut impl FnMut(&ConfigPane, Rect, Block, Rect, &mut T) -> Result<()>,
-        split_callback: &mut impl FnMut(Block, Rect, &mut T) -> Result<()>,
+        pane_callback: &mut impl FnMut(
+            &ConfigPane,
+            Rect,
+            Block,
+            Rect,
+            Option<Color>,
+            &mut T,
+        ) -> Result<()>,
+        split_callback: &mut impl FnMut(Block, Rect, Option<Color>, &mut T) -> Result<()>,
         ctx: &Ctx,
     ) -> Result<()> {
         let mut stack = vec![(self, area)];
@@ -1198,9 +1222,10 @@ impl SizedPaneOrSplit {
                     let mut block = Block::default()
                         .borders(pane.borders)
                         .border_set((&pane.border_symbols).into());
+                    let bg_color = pane.background_color;
                     if pane.border_title.is_empty() {
                         let pane_area = block.inner(area);
-                        pane_callback(pane, pane_area, block, area, &mut custom_data)?;
+                        pane_callback(pane, pane_area, block, area, bg_color, &mut custom_data)?;
                     } else {
                         let templs = PropertyTemplates::new(&pane.border_title);
                         let title = templs.format(song, ctx, &ctx.config);
@@ -1211,13 +1236,15 @@ impl SizedPaneOrSplit {
                             .title_alignment(pane.border_title_alignment);
 
                         let pane_area = block.inner(area);
-                        pane_callback(pane, pane_area, block, area, &mut custom_data)?;
+                        pane_callback(pane, pane_area, block, area, bg_color, &mut custom_data)?;
                     }
                 }
                 SizedPaneOrSplit::Split {
                     direction,
                     panes,
+                    background_color,
                     borders,
+                    border_style,
                     border_title,
                     border_title_position,
                     border_title_alignment,
@@ -1229,13 +1256,16 @@ impl SizedPaneOrSplit {
                     };
                     let constraints =
                         panes.iter().map(|pane| pane.size.into_constraint(parent_other_size));
-                    let mut block =
-                        Block::default().borders(*borders).border_set(border_symbols.into());
+                    let border_style = border_style.unwrap_or_else(|| ctx.config.as_border_style());
+                    let mut block = Block::default()
+                        .borders(*borders)
+                        .border_style(border_style)
+                        .border_set(border_symbols.into());
 
                     if border_title.is_empty() {
                         let pane_areas = block.inner(area);
                         let areas = Layout::new(*direction, constraints).split(pane_areas);
-                        split_callback(block, area, &mut custom_data)?;
+                        split_callback(block, area, *background_color, &mut custom_data)?;
                         stack.extend(
                             areas.iter().enumerate().map(|(idx, area)| (&panes[idx].pane, *area)),
                         );
@@ -1249,7 +1279,7 @@ impl SizedPaneOrSplit {
 
                         let pane_areas = block.inner(area);
                         let areas = Layout::new(*direction, constraints).split(pane_areas);
-                        split_callback(block, area, &mut custom_data)?;
+                        split_callback(block, area, *background_color, &mut custom_data)?;
                         stack.extend(
                             areas.iter().enumerate().map(|(idx, area)| (&panes[idx].pane, *area)),
                         );
@@ -1259,58 +1289,6 @@ impl SizedPaneOrSplit {
         }
 
         Ok(())
-    }
-}
-
-pub(crate) trait StringExt {
-    fn ellipsize(&self, max_len: usize, symbols: &SymbolsConfig) -> Cow<'_, str>;
-}
-
-impl StringExt for Cow<'_, str> {
-    fn ellipsize(&self, max_len: usize, symbols: &SymbolsConfig) -> Cow<'_, str> {
-        if self.chars().count() > max_len {
-            Cow::Owned(format!(
-                "{}{}",
-                self.chars()
-                    .take(max_len.saturating_sub(symbols.ellipsis.chars().count()))
-                    .collect::<String>(),
-                symbols.ellipsis,
-            ))
-        } else {
-            Cow::Borrowed(self)
-        }
-    }
-}
-
-impl StringExt for &str {
-    fn ellipsize(&self, max_len: usize, symbols: &SymbolsConfig) -> Cow<'_, str> {
-        if self.chars().count() > max_len {
-            Cow::Owned(format!(
-                "{}{}",
-                self.chars()
-                    .take(max_len.saturating_sub(symbols.ellipsis.chars().count()))
-                    .collect::<String>(),
-                symbols.ellipsis,
-            ))
-        } else {
-            Cow::Borrowed(self)
-        }
-    }
-}
-
-impl StringExt for String {
-    fn ellipsize(&self, max_len: usize, symbols: &SymbolsConfig) -> Cow<'_, str> {
-        if self.chars().count() > max_len {
-            Cow::Owned(format!(
-                "{}{}",
-                self.chars()
-                    .take(max_len.saturating_sub(symbols.ellipsis.chars().count()))
-                    .collect::<String>(),
-                symbols.ellipsis,
-            ))
-        } else {
-            Cow::Borrowed(self)
-        }
     }
 }
 

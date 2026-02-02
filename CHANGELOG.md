@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `extra_yt_dlp_args` to pass in more things to yt-dlp if required
+
+### Changed
+
+### Fixed
+
+## [0.11.0] - 2026-02-01
+
+### Added
+
 - `AfterCurrentAlbum` and `BeforeCurrentAlbum` to `AddOptions` keybind
 - `order` option to `album_art`, sets whether to check embedded image or cover image file first
 - Added hot reload for lyrics and corresponding `enable_lyrics_hot_reload` config option
@@ -29,19 +39,25 @@ as well as fully custom border symbol sets
 after starting a ytdlp download
 - Added `scroll_amount` config option
 - Added `Added()` and `LastModified()` song properties
+- Added `NotExact` and `NotRegex` search options
+- Added `--clean` aragument
+- Added `background_color` to pane configs
 
 ### Changed
 
 - **Breaking** Keybinds now only override the defaults. Meaning your configured keybinds are combined
+with the default ones. Set `clear` to true to keep the old behavior.
 - **Breaking** `show_song_table_header` has been removed. The queue header is now in a separate `QueueHeader`
 pane. You will need to update your config to include it in your tabs.
-with the default ones. Set `clear` to true to keep the old behavior.
 - **Breaking** `draw_borders` has been deprecated. The `Tabs` pane is no longer affected by this, use the
-- **Breaking** `current_item_style` and `highlighted_item_style` now merge on top of the item's style
-instead of having defaults,
-specify all the style properties (fg, bg, modifiers) to keep the old look
 borders configuration on the pane itself instead. This now only affects borders in the browser panes
 and this will be romeved in the future as well.
+- **Breaking** `current_item_style` and `highlighted_item_style` now merge on top of the item's style
+instead of having defaults, specify all the style properties (fg, bg, modifiers) to keep the old look
+-- **Breaking** progress bar's `use_track_when_empty` now defaults to true
+- `duration_format` is now a string template and configurable for song durations. Use `"%m:%S"` for
+classic format, `"%M:%S"` for zero-padded minutes, or custom templates with tokens like `%d/%D` (days),
+`%h/%H` (hours), `%m/%M` (minutes), `%s/%S` (seconds), `%t` (total seconds)
 - `Queue` pane no longer has empty space on the sides
 - Moved docs to a new [repository](https://github.com/rmpc-org/rmpc-org.github.io) and [domain](https://rmpc.mierak.dev/)
 - Rmpc now checks for embedded image first and cover image in a file second by default, this can be
@@ -49,6 +65,11 @@ configured with the new `album_art.order` option
 - The queue table should now be more performant for a very large number of items
 - Default keybinds have been updated. This will not affect you if have a properly setup config file.
 - Default theme has been updated. This will not affect you if have a properly setup config file.
+- Improved how config and theme files are read. Config file will now properly try all available paths
+instead of just the first one. When theme file is not found it will now correctly present an error
+instead of silently falling back to the default theme.
+- Improved rendering of the `Block` backend, it should now be less noisy
+- Synchronized lyrics now prefer showing more future lyrics rather than more past lyrics
 
 ### Fixed
 
@@ -67,6 +88,11 @@ should fix cases with `cache_dir` being set inside MPD's music directory
 - Added missing confirmation when deleting playlist/songs from playlist
 - Some very minor speedups in queue with very large queue sizes
 - `ScanStatus` not working
+- A harmless error about stickers not being supported will no longer show up when previewing a song
+in a browser pane for the first time will no longer show up
+- Ellipsis in Queue now properly works on the fully constructed property instead of on its parts
+- Fixed the `Block` image backend being cut off a bit
+- ueberzug image backend failing on first start
 
 ### Removed
 
@@ -520,7 +546,8 @@ section instead
 
 ## [0.1.0] - 2024-06-21
 
-[unreleased]: https://github.com/mierak/rmpc/compare/v0.10.0...HEAD
+[unreleased]: https://github.com/mierak/rmpc/compare/v0.11.0...HEAD
+[0.10.0]: https://github.com/mierak/rmpc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/mierak/rmpc/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mierak/rmpc/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mierak/rmpc/compare/v0.7.0...v0.8.0
