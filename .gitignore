@@ -1,10 +1,6 @@
 /target
 **.ron
 !assets/**.ron
-<<<<<<< HEAD
-*.snap
-=======
 # Nix
 /.direnv
 result
->>>>>>> upstream/master
