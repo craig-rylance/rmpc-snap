@@ -7,10 +7,31 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `extra_yt_dlp_args` to pass in more things to yt-dlp if required
+- **Breaking** `ExternalCommand` can now have arguments supplied at runtime. This will break your existing
+keybinds if they contained either `{` or `}`. You will now need to escape these by doubling them up: `{{` and `}}`.
+- `scroll_speed` to `song_table_format`
+- `album_art.custom_loader` to allow for more flexibility when choosing the album art image
+- added `CopyToClipboard()` action
+- `on_exit` config option to execute a command when exiting rmpc, similar to `on_song_change`
+- Added option to directly clear rating in the `Rate` keybind
+- Added `quit_closes_modal`
 
 ### Changed
 
+- Improved error message when invalid `default_album_art_path` path is provided
+- Environment variables are now resolved when parsing paths in the config file or theme
+
 ### Fixed
+
+- Theme hot reload not working when it was set using the `theme.ron` form
+- Issue with Iterm2 image protocol not rendering images sometimes
+- Moved `Update` and `Rescan` back to `u` and `U` respectively because they were conflicting with other
+keybinds
+- Fixed a benign error when deleting items from the queue really fast
+- Attempt to fix sync issues with cava visualiser
+- `preview_metadata_group_style` not being applied in the search pane
+- modals ignoring `text_color`
+
 
 ## [0.11.0] - 2026-02-01
 

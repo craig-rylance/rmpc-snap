@@ -1,0 +1,70 @@
+[package]
+name = "rmpc"
+version = "0.11.0"
+description = "A beautiful and configurable TUI client for MPD"
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rmpc-mpd = { path = "../rmpc-mpd" }
+rmpc-shared = { path = "../rmpc-shared" }
+clap = { workspace = true }
+dialoguer = { workspace = true }
+anyhow = { workspace = true }
+bon = { workspace = true }
+base64 = { workspace = true }
+crossterm = { workspace = true }
+image = { workspace = true }
+ratatui = { workspace = true }
+strum = { workspace = true }
+flate2 = { workspace = true }
+itertools = { workspace = true }
+ron = { workspace = true }
+derive_more = { workspace = true }
+rustix = { workspace = true }
+bitflags = { workspace = true }
+log = { workspace = true }
+flexi_logger = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
+either = { workspace = true }
+walkdir = { workspace = true }
+which = { workspace = true }
+url = { workspace = true }
+sysinfo = { workspace = true }
+color_quant = { workspace = true }
+enum-map = { workspace = true }
+textwrap = { workspace = true }
+crossbeam = { workspace = true }
+notify-debouncer-full = { workspace = true }
+unicode-width = { workspace = true }
+unicase = { workspace = true }
+serde_path_to_error = { workspace = true }
+serde_json = { workspace = true }
+ansi_colours = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+unicode-segmentation = { workspace = true }
+winnow = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+test-case = { workspace = true }
+rmpc-shared = { path = "../rmpc-shared", features = ["test-impl"] }
+
+[build-dependencies]
+rmpc-mpd = { path = "../rmpc-mpd" }
+clap = { workspace = true }
+strum = { workspace = true }
+serde = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
+vergen-gitcl = { workspace = true }
