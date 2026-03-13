@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use mlua::{LuaSerdeExt, Table};
+use mlua::{IntoLua, LuaSerdeExt, Table};
 use rmpc_mpd::{
     commands::{IdleEvent, State},
     mpd_client::{AlbumArtOrder, MpdClient},
@@ -16,17 +16,19 @@ use tokio::sync::{
     RwLock,
     mpsc::{UnboundedReceiver, UnboundedSender},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     AppEvent,
     async_client::AsyncClient,
     ctx::Ctx,
     ext::SenderExt,
-    lua::lualib::hooks::{ON_MESSAGE, ON_MESSAGES, ON_SONG_CHANGE, ON_STATE_CHANGE},
+    lua::lualib::{
+        hooks::{ON_IDLE, ON_MESSAGE, ON_MESSAGES, ON_SONG_CHANGE, ON_STATE_CHANGE},
+        mpd::types::Song,
+    },
     mpd_ext::MpdExt,
     mpris::Change,
-    song::Song,
 };
 
 static IS_PLAYING: AtomicBool = AtomicBool::new(false);
@@ -47,7 +49,7 @@ pub async fn init(
     let hooks = lua.globals().get::<Table>("rmpcd")?.get::<Table>("hooks")?;
 
     loop {
-        debug!("Waiting for events...");
+        trace!("Waiting for events...");
         let Some(ev) = rx.recv().await else {
             warn!("Idle task ended");
             break;
@@ -63,8 +65,8 @@ pub async fn init(
                 let ro_status = &ro_mpd_state.status;
                 let ro_song = &ro_mpd_state.current_song;
                 if ro_song != &song {
-                    let old_song = lua.to_value(&ro_song.as_ref().map(Song::from))?;
-                    let new_song = lua.to_value(&song.as_ref().map(Song::from))?;
+                    let old_song = ro_song.as_ref().map(Song::from).into_lua(&lua)?;
+                    let new_song = song.as_ref().map(Song::from).into_lua(&lua)?;
 
                     album_art = if let Some(s) = &song {
                         let uri = s.file.clone();
@@ -86,8 +88,14 @@ pub async fn init(
                 }
 
                 if ro_status.state != new_status.state {
-                    let old_state = lua.to_value(&ro_status.state)?;
-                    let new_state = lua.to_value(&new_status.state)?;
+                    // TODO lowercasing
+                    let state_to_str = |state| match state {
+                        State::Play => "play",
+                        State::Pause => "pause",
+                        State::Stop => "stop",
+                    };
+                    let old_state = lua.to_value(&state_to_str(ro_status.state))?;
+                    let new_state = lua.to_value(&state_to_str(new_status.state))?;
 
                     let state_hooks = hooks.get::<Table>(ON_STATE_CHANGE)?;
 
@@ -183,7 +191,14 @@ pub async fn init(
                             debug!(?ev, "Event currently not supported");
                             // TODO receiving event without calling client::run will block the event
                             // loop forever
-                            client.run(|c| c.get_current_song()).await.ok();
+                            client.run(|_| Ok(())).await.ok();
+                        }
+                    }
+
+                    let idle_ev_hooks = hooks.get::<Table>(ON_IDLE)?;
+                    for func in idle_ev_hooks.sequence_values::<mlua::Function>() {
+                        if let Err(err) = func?.call_async::<()>(ev.to_string()).await {
+                            error!(err = ?err, "Failed to call on_idle callback");
                         }
                     }
                 }
@@ -203,7 +218,7 @@ pub fn start_update_loop(client: Arc<AsyncClient>, tx: UnboundedSender<AppEvent>
             if !IS_PLAYING.load(Ordering::Relaxed) {
                 break;
             }
-            debug!("Tick: checking status...");
+            trace!("Tick: checking status...");
 
             match client.run(|c| c.get_status()).await {
                 Ok(s) => tx.send_safe(AppEvent::StatusUpdate(s.clone())),

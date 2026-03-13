@@ -15,6 +15,8 @@ keybinds if they contained either `{` or `}`. You will now need to escape these 
 - `on_exit` config option to execute a command when exiting rmpc, similar to `on_song_change`
 - Added option to directly clear rating in the `Rate` keybind
 - Added `quit_closes_modal`
+- `remove` to the CLI allowing you to remove songs from the queue
+- `Pause` and `Unpause` actions
 
 ### Changed
 
@@ -31,6 +33,7 @@ keybinds
 - Attempt to fix sync issues with cava visualiser
 - `preview_metadata_group_style` not being applied in the search pane
 - modals ignoring `text_color`
+- Fixed potential panic in sorting when mixixng numerical and non numerical values for some song properties
 
 
 ## [0.11.0] - 2026-02-01

@@ -1,9 +1,19 @@
-use anyhow::Result;
-use mlua::{ExternalError, IntoLuaMulti, Lua};
+use mlua::{ExternalError, IntoLuaMulti, Lua, Table, Value};
 use tracing::error;
 
-pub fn init(lua: &Lua) -> Result<()> {
+pub fn create(lua: &Lua) -> mlua::Result<Table> {
     let tbl = lua.create_table()?;
+
+    let exists =
+        lua.create_async_function(async |lua, path: String| {
+            match tokio::fs::try_exists(path).await {
+                Ok(exists) => exists.into_lua_multi(&lua),
+                Err(err) => {
+                    error!(err = ?err, "Failed to check if file exists");
+                    (false, err.into_lua_err()).into_lua_multi(&lua)
+                }
+            }
+        })?;
 
     let create_dir_all = lua.create_async_function(async |lua, path: String| {
         match tokio::fs::create_dir_all(path).await {
@@ -34,6 +44,17 @@ pub fn init(lua: &Lua) -> Result<()> {
             }
         }
     })?;
+
+    let write_str =
+        lua.create_async_function(async |lua, (path, contents): (String, String)| {
+            match tokio::fs::write(path, contents).await {
+                Ok(()) => true.into_lua_multi(&lua),
+                Err(err) => {
+                    error!(err = ?err, "Failed to write file");
+                    (false, err.into_lua_err()).into_lua_multi(&lua)
+                }
+            }
+        })?;
 
     let delete =
         lua.create_async_function(async |lua, path: String| {
@@ -66,13 +87,35 @@ pub fn init(lua: &Lua) -> Result<()> {
         }
     })?;
 
-    tbl.set("create_dir_all", create_dir_all)?;
-    tbl.set("create_dir", create_dir)?;
-    tbl.set("write", write)?;
-    tbl.set("delete", delete)?;
-    tbl.set("remove_dir", remove_dir)?;
-    tbl.set("remove_dir_all", remove_dir_all)?;
-    lua.globals().raw_set("fs", tbl)?;
+    let read =
+        lua.create_async_function(async |lua, path: String| match tokio::fs::read(path).await {
+            Ok(contents) => contents.into_lua_multi(&lua),
+            Err(err) => {
+                error!(err = ?err, "Failed to read file");
+                (Value::Nil, err.into_lua_err()).into_lua_multi(&lua)
+            }
+        })?;
 
-    Ok(())
+    let read_str = lua.create_async_function(async |lua, path: String| {
+        match tokio::fs::read_to_string(path).await {
+            Ok(contents) => contents.into_lua_multi(&lua),
+            Err(err) => {
+                error!(err = ?err, "Failed to read file");
+                (Value::Nil, err.into_lua_err()).into_lua_multi(&lua)
+            }
+        }
+    })?;
+
+    tbl.raw_set("exists", exists)?;
+    tbl.raw_set("create_dir_all", create_dir_all)?;
+    tbl.raw_set("create_dir", create_dir)?;
+    tbl.raw_set("write", write)?;
+    tbl.raw_set("write_str", write_str)?;
+    tbl.raw_set("read", read)?;
+    tbl.raw_set("read_str", read_str)?;
+    tbl.raw_set("delete", delete)?;
+    tbl.raw_set("remove_dir", remove_dir)?;
+    tbl.raw_set("remove_dir_all", remove_dir_all)?;
+
+    Ok(tbl)
 }

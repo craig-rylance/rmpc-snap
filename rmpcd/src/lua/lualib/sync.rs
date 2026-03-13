@@ -1,9 +1,9 @@
-use mlua::{Function, IntoLua, Lua};
+use mlua::{Function, IntoLua, Lua, Table};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
 
-pub fn init(lua: &Lua) -> mlua::Result<()> {
+pub fn create(lua: &Lua) -> mlua::Result<Table> {
     let tbl = lua.create_table()?;
 
     let set_timeout = lua.create_async_function(
@@ -30,12 +30,42 @@ pub fn init(lua: &Lua) -> mlua::Result<()> {
         },
     )?;
 
-    tbl.raw_set("set_timeout", set_timeout)?;
-    lua.globals().raw_set("sync", tbl)?;
+    let interval = lua.create_async_function(
+        async |_, args: (u64, Function)| -> mlua::Result<TimeoutHandle> {
+            let token = CancellationToken::new();
+            let handle = TimeoutHandle { token: token.clone() };
 
-    Ok(())
+            let handle_clone = handle.clone();
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(tokio::time::Duration::from_millis(args.0));
+                loop {
+                    select! {
+                        _ = interval.tick() => {
+                            trace!("Interval tick");
+                            if let Err(err) = args.1.call_async::<()>(handle_clone.clone()).await {
+                                error!(err = ?err, "Failed to call interval callback");
+                            }
+                        }
+                        () = token.cancelled() => {
+                            trace!("Interval cancelled");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Ok(handle)
+        },
+    )?;
+
+    tbl.raw_set("set_timeout", set_timeout)?;
+    tbl.raw_set("set_interval", interval)?;
+
+    Ok(tbl)
 }
 
+#[derive(Clone)]
 struct TimeoutHandle {
     token: CancellationToken,
 }

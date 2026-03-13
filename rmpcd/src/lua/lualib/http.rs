@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
 use mlua::{ExternalResult, Lua, LuaSerdeExt, Table, Value};
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-pub fn init(lua: &Lua) -> Result<()> {
+pub fn create(lua: &Lua) -> mlua::Result<Table> {
     let tbl = lua.create_table()?;
 
     let call = lua.create_async_function(async |lua, (url, opts): (String, Option<Value>)| {
@@ -30,9 +29,8 @@ pub fn init(lua: &Lua) -> Result<()> {
     tbl.set("call", call)?;
     tbl.set("get", get)?;
     tbl.set("post", post)?;
-    lua.globals().raw_set("http", tbl)?;
 
-    Ok(())
+    Ok(tbl)
 }
 
 async fn do_call(lua: Lua, url: &str, opts: Option<RequestOpts>) -> mlua::Result<Table> {
@@ -41,6 +39,10 @@ async fn do_call(lua: Lua, url: &str, opts: Option<RequestOpts>) -> mlua::Result
 
     for (k, v) in opts.headers {
         client = client.header(k, v);
+    }
+
+    if !opts.params.is_empty() {
+        client = client.query(&opts.params);
     }
 
     if let Some(body) = opts.body {
@@ -126,12 +128,16 @@ struct RequestOpts {
     #[serde(default)]
     headers: HashMap<String, String>,
     body: Option<String>,
+    #[serde(default)]
+    params: HashMap<String, String>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 struct GetOpts {
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default)]
+    params: HashMap<String, String>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -139,16 +145,23 @@ struct PostOpts {
     #[serde(default)]
     headers: HashMap<String, String>,
     body: Option<String>,
+    #[serde(default)]
+    params: HashMap<String, String>,
 }
 
 impl From<GetOpts> for RequestOpts {
     fn from(value: GetOpts) -> Self {
-        Self { method: Method::Get, headers: value.headers, body: None }
+        Self { method: Method::Get, headers: value.headers, body: None, params: value.params }
     }
 }
 
 impl From<PostOpts> for RequestOpts {
     fn from(value: PostOpts) -> Self {
-        Self { method: Method::Post, headers: value.headers, body: value.body }
+        Self {
+            method: Method::Post,
+            headers: value.headers,
+            body: value.body,
+            params: value.params,
+        }
     }
 }

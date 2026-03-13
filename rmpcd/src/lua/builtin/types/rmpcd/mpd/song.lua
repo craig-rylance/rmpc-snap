@@ -1,0 +1,46 @@
+---@class Song
+---@field file string
+---@field duration integer Song duration in milliseconds
+---@field artist? MetadataValue
+---@field artist_sort? MetadataValue
+---@field album? MetadataValue
+---@field album_sort? MetadataValue
+---@field album_artist? MetadataValue
+---@field album_artist_sort? MetadataValue
+---@field title? MetadataValue
+---@field title_sort? MetadataValue
+---@field track? MetadataValue
+---@field name? MetadataValue
+---@field genre? MetadataValue
+---@field mood? MetadataValue
+---@field date? MetadataValue
+---@field original_date? MetadataValue
+---@field composer? MetadataValue
+---@field composer_sort? MetadataValue
+---@field performer? MetadataValue
+---@field conductor? MetadataValue
+---@field work? MetadataValue
+---@field ensemble? MetadataValue
+---@field movement? MetadataValue
+---@field movement_number? MetadataValue
+---@field show_movement? boolean
+---@field location? MetadataValue
+---@field grouping? MetadataValue
+---@field comment? MetadataValue
+---@field disc? MetadataValue
+---@field label? MetadataValue
+---@field musicbrainz_artist_id? MetadataValue
+---@field musicbrainz_album_id? MetadataValue
+---@field musicbrainz_album_artist_id? MetadataValue
+---@field musicbrainz_track_id? MetadataValue
+---@field musicbrainz_release_group_id? MetadataValue
+---@field musicbrainz_release_track_id? MetadataValue
+---@field musicbrainz_work_id? MetadataValue
+
+---@class MetadataValue
+---Represents a tag that may contain one or many values.
+---@field first fun(self: MetadataValue): string
+---@field last fun(self: MetadataValue): string
+---@field join fun(self: MetadataValue, sep?: string): string
+---@field values fun(self: MetadataValue): string[]
+---@operator concat(MetadataValue|string|number): string
