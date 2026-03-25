@@ -14,7 +14,8 @@ use ratatui::{
 use rmpc_mpd::{
     client::Client,
     commands::Song,
-    mpd_client::MpdClient,
+    mpd_client::{MpdClient, MpdCommand},
+    proto_client::ProtoClient,
     queue_position::QueuePosition,
     single_or_range::SingleOrRange,
 };
@@ -35,8 +36,11 @@ use crate::{
                 DeleteKind,
                 RateKind,
                 SaveKind,
+                Sort,
+                SortOpts,
             },
         },
+        sort_mode::{SortMode, SortOptions},
         theme::{
             AlbumSeparator,
             properties::{Property, SongProperty},
@@ -47,7 +51,9 @@ use crate::{
     shared::{
         args,
         clipboard::Clipboard,
+        events::AppEvent,
         ext::{btreeset_ranges::BTreeSetRanges, rect::RectExt},
+        id::{self, Id},
         keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
@@ -87,6 +93,8 @@ pub struct QueuePane {
     column_formats: Vec<Property<SongProperty>>,
     areas: EnumMap<Areas, Rect>,
     should_center_cursor_on_current: bool,
+    highlight_id: Id,
+    highlight_enabled: bool,
 }
 
 #[derive(Debug, Enum)]
@@ -102,8 +110,9 @@ const ADD_TO_PLAYLIST_MULTIPLE: &str = "add_to_playlist_multiple";
 impl QueuePane {
     pub fn new(ctx: &Ctx) -> Self {
         let (column_widths, column_formats) = Self::init(ctx);
+        let highlight_id = id::new();
 
-        Self {
+        let mut s = Self {
             queue: Dir::new(ctx.queue.clone()),
             column_widths,
             column_formats,
@@ -111,7 +120,13 @@ impl QueuePane {
                 _ => Rect::default(),
             },
             should_center_cursor_on_current: ctx.config.center_current_song_on_change,
-        }
+            highlight_id,
+            highlight_enabled: true,
+        };
+
+        s.highlight_timeout(ctx);
+
+        s
     }
 
     pub fn init(ctx: &Ctx) -> (Vec<Constraint>, Vec<Property<SongProperty>>) {
@@ -125,6 +140,16 @@ impl QueuePane {
                 .collect_vec(),
             ctx.config.theme.song_table_format.iter().map(|v| v.prop.clone()).collect_vec(),
         )
+    }
+
+    fn highlight_timeout(&mut self, ctx: &Ctx) {
+        if let Some(delay) = ctx.config.queue_disable_current_item_style_timeout_ms {
+            self.highlight_enabled = true;
+            ctx.scheduler.schedule_replace(self.highlight_id, delay, |(tx, _)| {
+                tx.send(AppEvent::UiEvent(UiEvent::DisableQueueHighlight))?;
+                Ok(())
+            });
+        }
     }
 
     fn enqueue_items(&self, all: bool) -> (Vec<Enqueue>, Option<usize>) {
@@ -259,6 +284,41 @@ impl QueuePane {
 
         modal!(ctx, modal);
     }
+
+    fn sort(opts: SortOpts, ctx: &Ctx) -> Result<()> {
+        let opts = SortOptions {
+            mode: SortMode::Format(opts.tags),
+            group_by_type: false,
+            reverse: opts.descending,
+            ignore_leading_the: false,
+            fold_case: true,
+        };
+
+        let mut evald = ctx
+            .queue
+            .iter()
+            .map(|song| (song.id, song))
+            .sorted_by(|a, b| a.1.with_custom_sort(&opts).cmp(&b.1.with_custom_sort(&opts)))
+            .collect_vec();
+
+        if ctx.queue.iter().map(|song| (song.id, song)).zip(evald.iter()).all(|(a, b)| a.0 == b.0) {
+            evald.reverse();
+        }
+
+        let swaps = QueueHeaderPane::calculate_swaps(evald.as_slice(), ctx)?;
+
+        ctx.command(move |client| {
+            client.send_start_cmd_list()?;
+            for swap in swaps {
+                client.send_swap_position(swap.0, swap.1)?;
+            }
+            client.send_execute_cmd_list()?;
+            client.read_ok()?;
+            Ok(())
+        });
+
+        Ok(())
+    }
 }
 
 impl Pane for QueuePane {
@@ -306,7 +366,11 @@ impl Pane for QueuePane {
 
         let table = VirtualizedTable::new(&self.queue.items)
             .column_widths(self.column_widths.clone())
-            .row_highlight_style(config.theme.current_item_style)
+            .row_highlight_style(if self.highlight_enabled {
+                config.theme.current_item_style
+            } else {
+                Style::default()
+            })
             .map_fn(|idx, song| {
                 let is_current = current_song_id.is_some_and(|v| v == song.id);
 
@@ -459,6 +523,8 @@ impl Pane for QueuePane {
             self.queue.select_idx_opt(to_select, usize::MAX);
         }
 
+        self.highlight_timeout(ctx);
+
         Ok(())
     }
 
@@ -515,6 +581,10 @@ impl Pane for QueuePane {
                 let (column_widths, column_formats) = Self::init(ctx);
                 self.column_formats = column_formats;
                 self.column_widths = column_widths;
+            }
+            UiEvent::DisableQueueHighlight => {
+                self.highlight_enabled = false;
+                ctx.render()?;
             }
             _ => {}
         }
@@ -605,6 +675,8 @@ impl Pane for QueuePane {
             MouseEventKind::RightClick => {}
             MouseEventKind::Drag { .. } => {}
         }
+
+        self.highlight_timeout(ctx);
 
         Ok(())
     }
@@ -699,6 +771,8 @@ impl Pane for QueuePane {
             }
             InputResultEvent::NoChange => {}
         }
+
+        self.highlight_timeout(ctx);
         ctx.render()?;
         Ok(())
     }
@@ -791,6 +865,37 @@ impl Pane for QueuePane {
                 }
                 QueueActions::SortByColumn(idx) => {
                     QueueHeaderPane::sort_by_column(self.column_formats.as_slice(), *idx, ctx)?;
+                    ctx.render()?;
+                }
+                QueueActions::Sort { kind: Sort::Modal(opts) } => {
+                    let modal = MenuModal::new(ctx)
+                        .select_section(ctx, |mut sect| {
+                            for opt in opts {
+                                sect.add_item(opt.0.clone(), opt.0.clone());
+
+                                let opts = opts.clone();
+                                sect.action(move |ctx, value| {
+                                    let Some((_, opts)) = opts.iter().find(|opt| opt.0 == value)
+                                    else {
+                                        // shouldn't happen since the options are generated from
+                                        // the same list, but just in case
+                                        status_error!("Invalid option selected");
+                                        return Ok(());
+                                    };
+
+                                    Self::sort(opts.clone(), ctx)
+                                });
+                            }
+
+                            Some(sect)
+                        })
+                        .list_section(ctx, |section| Some(section.item("Cancel", |_ctx| Ok(()))))
+                        .build();
+
+                    modal!(ctx, modal);
+                }
+                QueueActions::Sort { kind: Sort::Tags(opts) } => {
+                    Self::sort(opts.clone(), ctx)?;
                     ctx.render()?;
                 }
                 QueueActions::Unused => {}
@@ -1242,6 +1347,10 @@ impl Pane for QueuePane {
                 }
             }
         }
+
+        self.highlight_enabled = true;
+
+        self.highlight_timeout(ctx);
 
         Ok(())
     }

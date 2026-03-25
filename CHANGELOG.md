@@ -17,6 +17,10 @@ keybinds if they contained either `{` or `}`. You will now need to escape these 
 - Added `quit_closes_modal`
 - `remove` to the CLI allowing you to remove songs from the queue
 - `Pause` and `Unpause` actions
+- `inverted_bar_as_mask` option to cava
+- `Sort` queue keybind
+- `AlbumArtist` added to song properties.
+- Added `queue_disable_current_item_style_timeout_ms`
 
 ### Changed
 
@@ -34,6 +38,7 @@ keybinds
 - `preview_metadata_group_style` not being applied in the search pane
 - modals ignoring `text_color`
 - Fixed potential panic in sorting when mixixng numerical and non numerical values for some song properties
+- password and address override parameter not working for rmpc's CLI
 
 
 ## [0.11.0] - 2026-02-01

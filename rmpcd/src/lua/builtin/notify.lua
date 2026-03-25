@@ -1,8 +1,9 @@
-local sync = require("rmpcd.sync")
-local process = require("rmpcd.process")
-local mpd = require("rmpcd.mpd")
-local fs = require("rmpcd.fs")
-local log = require("rmpcd.log")
+---@type NotifyPlugin
+local M = {
+    enabled = true,
+    with_album_art = true,
+    album_art_path = "/tmp/rmpcd-notify-album-art",
+}
 
 ---@param new_song Song
 ---@param with_album_art boolean
@@ -29,36 +30,54 @@ local function notify(new_song, with_album_art, album_art_path)
     end
 end
 
-local album_art_path = "/tmp/rmpcd-notify-album-art"
----@type NotifyModule
-return {
-    install = function(args)
-        local _args = args or {}
+---@param _new_song Song
+---@param _with_album_art boolean
+---@param _album_art_path string
+local function notify_debounced(_new_song, _with_album_art, _album_art_path) end
 
-        local debounced = sync.debounce(
-            500,
-            ---@param _old_song Song | nil
-            ---@param new_song Song | nil
-            ---@diagnostic disable-next-line: unused-local
-            function(_old_song, new_song)
-                log.info("Notifying")
-                if new_song == nil then
-                    log.info("No new song, skipping notification")
-                    return
-                end
+M.setup = function(self, args)
+    self.with_album_art = (args.with_album_art ~= nil) and args.with_album_art or true
+    self.album_art_path = args.album_art_path or "/tmp/rmpcd-notify-album-art"
+    self.enabled = (args.enabled ~= nil) and args.enabled or true
 
-                notify(new_song, _args.with_album_art or true, _args.album_art_path or album_art_path)
-                log.info("Notification sent")
-            end
-        )
+    local notify_send = util.which("notify-send")
+    if not notify_send then
+        log.error("notify-send not found in PATH, disabling notify plugin")
+        self.enabled = false
+    end
 
-        rmpcd.on("song_change", debounced)
-        -- rmpcd.on("song_change", function(_old_song, new_song)
-        --     if new_song == nil then
-        --         return
-        --     end
-        --
-        --     notify(new_song, _args.with_album_art or true, _args.album_art_path or album_art_path)
-        -- end)
-    end,
-}
+    local debounce_delay = args.debounce_delay or 1000
+    if debounce_delay < 0 then
+        notify_debounced = notify
+    else
+        notify_debounced = sync.debounce(debounce_delay, notify)
+    end
+end
+
+M.song_change = function(self, _old_song, new_song)
+    if not self.enabled then
+        return
+    end
+
+    if new_song == nil then
+        return
+    end
+
+    notify_debounced(new_song, self.with_album_art or true, self.album_art_path)
+end
+
+M.subscribed_channels = { "rmpcd.notify" }
+M.message = function(self, _channel, message)
+    if message == "enable" then
+        log.info("Enabling notify plugin")
+        self.enabled = true
+    elseif message == "disable" then
+        log.info("Disabling notify plugin")
+        self.enabled = false
+    elseif message == "toggle" then
+        log.info("Toggling notify plugin to: " .. tostring(not self.enabled))
+        self.enabled = not self.enabled
+    end
+end
+
+return M

@@ -19,6 +19,7 @@ pub enum SongPropertyFile {
     Title,
     Artist,
     Album,
+    AlbumArtist,
     Duration,
     Track,
     Disc,
@@ -31,7 +32,7 @@ pub enum SongPropertyFile {
     Other(String),
 }
 
-#[derive(Debug, Clone, Display, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, strum::Display, Hash, Eq, PartialEq)]
 pub enum SongProperty {
     Filename,
     File,
@@ -39,6 +40,7 @@ pub enum SongProperty {
     Title,
     Artist,
     Album,
+    AlbumArtist,
     Duration,
     Track,
     Disc,
@@ -48,6 +50,7 @@ pub enum SongProperty {
     Channels(),
     Added(),
     LastModified(),
+    #[strum(to_string = "Other(\"{0}\")")]
     Other(String),
 }
 
@@ -343,6 +346,7 @@ impl From<SongPropertyFile> for SongProperty {
             SongPropertyFile::Title => SongProperty::Title,
             SongPropertyFile::Artist => SongProperty::Artist,
             SongPropertyFile::Album => SongProperty::Album,
+            SongPropertyFile::AlbumArtist => SongProperty::AlbumArtist,
             SongPropertyFile::Duration => SongProperty::Duration,
             SongPropertyFile::Track => SongProperty::Track,
             SongPropertyFile::Disc => SongProperty::Disc,

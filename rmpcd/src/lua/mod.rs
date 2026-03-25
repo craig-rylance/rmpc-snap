@@ -1,53 +1,68 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use mlua::{Lua, Table};
-use rmpc_shared::paths::rmpcd_config_dir;
+use tokio::sync::RwLock;
 
-use crate::async_client::AsyncClient;
+use crate::{
+    async_client::AsyncClient,
+    lua::plugin::{LuaPluginEntry, PluginEvent},
+};
 
 pub mod lualib;
+pub mod plugin;
 
-pub async fn init(client: &Arc<AsyncClient>) -> Result<(Lua, Table)> {
-    let Some(config_dir) = rmpcd_config_dir() else {
-        bail!("Could not determine config directory");
-    };
-    let rmpcd_pkg_path =
-        format!("{}/?.lua;{}/?/init.lua", config_dir.display(), config_dir.display());
-
+pub fn create(
+    cfg_dir: &Path,
+    client: &Arc<AsyncClient>,
+    plugins: Option<&Arc<RwLock<Vec<Arc<RwLock<LuaPluginEntry>>>>>>,
+) -> Result<Lua> {
     let lua = Lua::new();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<PluginEvent>();
+    {
+        let tx = tx.clone();
+        lua.set_app_data(tx);
+    }
+
+    let rmpcd_pkg_path = format!("{}/?.lua;{}/?/init.lua", cfg_dir.display(), cfg_dir.display());
+
     let package: Table = lua.globals().get("package")?;
     let package_path = package.get::<String>("path")?;
-    let preload = package.get::<Table>("preload")?;
 
     package.set("path", format!("{rmpcd_pkg_path};{package_path}"))?;
 
     let rmpcd = lua.create_table()?;
     lua.globals().raw_set("rmpcd", &rmpcd)?;
 
-    install_lib(&lua, &preload, client)?;
-    install_builtins(&lua, &preload)?;
+    install_lib(&lua, client, plugins)?;
+    install_builtins(&lua)?;
 
-    let file = std::fs::read(config_dir.join("init.lua"))?;
-    let lua_config: Table = lua.load(&file).eval_async().await?;
-
-    Ok((lua, lua_config))
+    Ok(lua)
 }
 
-pub fn install_lib(lua: &Lua, preload: &Table, client: &Arc<AsyncClient>) -> mlua::Result<()> {
+pub async fn eval_config(lua: &Lua, cfg_dir: &Path) -> Result<Table> {
+    let file = std::fs::read(cfg_dir.join("init.lua"))?;
+    let lua_config: Table = lua.load(&file).eval_async().await?;
+
+    Ok(lua_config)
+}
+
+pub fn install_lib(
+    lua: &Lua,
+    client: &Arc<AsyncClient>,
+    plugins: Option<&Arc<RwLock<Vec<Arc<RwLock<LuaPluginEntry>>>>>>,
+) -> mlua::Result<()> {
     macro_rules! install_lib {
         ($name:ident) => {
-            let lib = lualib::$name::create(lua)?;
-            preload.raw_set(
-                concat!("rmpcd.", stringify!($name)),
-                lua.create_function(move |_, ()| Ok(lib.clone()))?,
-            )?;
+            let lib = crate::lua::lualib::$name::create(lua)?;
+            lua.globals().raw_set(stringify!($name), lib)?;
         };
     }
-    lualib::hooks::init(lua)?;
+
+    lualib::plugin::init(lua, plugins)?;
 
     let mpd = lualib::mpd::create(lua, client)?;
-    preload.raw_set("rmpcd.mpd", lua.create_function(move |_, ()| Ok(mpd.clone()))?)?;
+    lua.globals().raw_set("mpd", mpd)?;
 
     install_lib!(log);
     install_lib!(sync);
@@ -59,22 +74,14 @@ pub fn install_lib(lua: &Lua, preload: &Table, client: &Arc<AsyncClient>) -> mlu
     Ok(())
 }
 
-pub fn install_builtins(lua: &Lua, preload: &Table) -> mlua::Result<()> {
+pub fn install_builtins(lua: &Lua) -> mlua::Result<()> {
     macro_rules! install_builtin {
         ($name:literal) => {
-            let tbl = lua
-                .load(include_str!(concat!("./builtin/", $name, ".lua")))
-                .set_name($name)
+            lua.load(include_str!(concat!("./builtin/", $name, ".lua")))
+                .set_name(concat!("#builtin/", $name, ".lua"))
                 .call::<Table>(())?;
-            preload.set(
-                concat!("rmpcd.", $name),
-                lua.create_function(move |_, ()| Ok(tbl.clone()))?,
-            )?;
         };
     }
-
-    // Sync modifies the preload table directly
-    lua.load(include_str!("./builtin/sync.lua")).set_name("sync").exec()?;
 
     install_builtin!("notify");
     install_builtin!("playcount");

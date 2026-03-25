@@ -1,31 +1,30 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::Result;
-use mlua::{IntoLua, LuaSerdeExt, Table};
 use rmpc_mpd::{
     commands::{IdleEvent, State},
     mpd_client::{AlbumArtOrder, MpdClient},
 };
-use tokio::sync::{
-    RwLock,
-    mpsc::{UnboundedReceiver, UnboundedSender},
+use tokio::{
+    select,
+    sync::{
+        RwLock,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+    },
 };
-use tracing::{debug, error, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::{
     AppEvent,
     async_client::AsyncClient,
     ctx::Ctx,
     ext::SenderExt,
-    lua::lualib::{
-        hooks::{ON_IDLE, ON_MESSAGE, ON_MESSAGES, ON_SONG_CHANGE, ON_STATE_CHANGE},
-        mpd::types::Song,
+    lua::{
+        lualib::mpd::types::Song,
+        plugin::{self, LuaPlugin, PluginStore, PluginsEvent},
     },
     mpd_ext::MpdExt,
     mpris::Change,
@@ -36,24 +35,39 @@ static IS_PLAYING: AtomicBool = AtomicBool::new(false);
 pub async fn init(
     client: Arc<AsyncClient>,
     ctx: Arc<RwLock<Ctx>>,
-    mut rx: UnboundedReceiver<AppEvent>,
-    tx: UnboundedSender<AppEvent>,
+    mut app_ev_rx: UnboundedReceiver<AppEvent>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    app_ev_tx: UnboundedSender<AppEvent>,
     mpris_tx: Option<UnboundedSender<Change>>,
-    lua: mlua::Lua,
+    plugin_store: PluginStore<LuaPlugin>,
 ) -> Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<PluginsEvent>();
+
+    let plugin_handle =
+        tokio::spawn(async move { plugin::init_plugin_loop(rx, plugin_store).await });
+
     if ctx.read().await.status.state == State::Play {
-        start_update_loop(client.clone(), tx.clone());
+        start_update_loop(client.clone(), app_ev_tx.clone());
     }
 
     let mut change_buffer = Vec::new();
-    let hooks = lua.globals().get::<Table>("rmpcd")?.get::<Table>("hooks")?;
 
     loop {
         trace!("Waiting for events...");
-        let Some(ev) = rx.recv().await else {
-            warn!("Idle task ended");
-            break;
+        let ev = select! {
+            ev = app_ev_rx.recv() => {
+                if let Some(ev) = ev { ev } else {
+                    warn!("Idle task ended because app event channel was closed");
+                    break;
+                }
+            },
+            _ = shutdown_rx.recv() => {
+                info!("Shutdown signal received, stopping event loop");
+                tx.send_safe(PluginsEvent::Shutdown);
+                break;
+            }
         };
+        trace!(?ev, "Received event");
 
         match ev {
             AppEvent::StatusUpdate(new_status) => {
@@ -65,9 +79,6 @@ pub async fn init(
                 let ro_status = &ro_mpd_state.status;
                 let ro_song = &ro_mpd_state.current_song;
                 if ro_song != &song {
-                    let old_song = ro_song.as_ref().map(Song::from).into_lua(&lua)?;
-                    let new_song = song.as_ref().map(Song::from).into_lua(&lua)?;
-
                     album_art = if let Some(s) = &song {
                         let uri = s.file.clone();
                         album_art_changed = true;
@@ -78,32 +89,17 @@ pub async fn init(
                         None
                     };
 
-                    let song_hooks = hooks.get::<Table>(ON_SONG_CHANGE)?;
-
-                    for func in song_hooks.sequence_values::<mlua::Function>() {
-                        if let Err(err) = func?.call_async::<()>((&old_song, &new_song)).await {
-                            error!(err = ?err, "Failed to call on_song_change callback");
-                        }
-                    }
+                    tx.send_safe(PluginsEvent::SongChange {
+                        old: ro_song.as_ref().map(Song::from),
+                        new: song.as_ref().map(Song::from),
+                    });
                 }
 
                 if ro_status.state != new_status.state {
-                    // TODO lowercasing
-                    let state_to_str = |state| match state {
-                        State::Play => "play",
-                        State::Pause => "pause",
-                        State::Stop => "stop",
-                    };
-                    let old_state = lua.to_value(&state_to_str(ro_status.state))?;
-                    let new_state = lua.to_value(&state_to_str(new_status.state))?;
-
-                    let state_hooks = hooks.get::<Table>(ON_STATE_CHANGE)?;
-
-                    for func in state_hooks.sequence_values::<mlua::Function>() {
-                        if let Err(err) = func?.call_async::<()>((&old_state, &new_state)).await {
-                            error!(err = ?err, "Failed to call on_state_change callback");
-                        }
-                    }
+                    tx.send_safe(PluginsEvent::StateChange {
+                        old: ro_status.clone().into(),
+                        new: new_status.clone().into(),
+                    });
                 }
 
                 change_buffer.push(Change::Metadata); // TODO
@@ -111,7 +107,7 @@ pub async fn init(
                     change_buffer.push(Change::PlaybackState);
                     match new_status.state {
                         State::Play => {
-                            let tx = tx.clone();
+                            let tx = app_ev_tx.clone();
                             let client = client.clone();
                             start_update_loop(client, tx);
                         }
@@ -140,7 +136,7 @@ pub async fn init(
                     match ev {
                         IdleEvent::Player => {
                             let new_status = client.run(|c| c.get_status()).await?;
-                            tx.send_safe(AppEvent::StatusUpdate(new_status));
+                            app_ev_tx.send_safe(AppEvent::StatusUpdate(new_status));
                         }
                         IdleEvent::Mixer => {
                             let new_status = client.run(|c| c.get_status()).await?;
@@ -161,50 +157,30 @@ pub async fn init(
                             }
                         }
                         IdleEvent::Message => {
-                            let messages = client.run(|c| c.read_messages()).await?;
-
-                            let message_hooks = hooks.get::<Table>(ON_MESSAGE)?;
-                            for func in message_hooks.sequence_values::<mlua::Function>() {
-                                let func = func?;
-                                for (k, v) in &messages.0 {
-                                    if let Err(err) = func
-                                        .call_async::<()>((lua.to_value(k)?, lua.to_value(v)?))
-                                        .await
-                                    {
-                                        error!(err = ?err, "Failed to call on_message callback");
-                                    }
-                                }
-                            }
-
-                            let msgs_hooks = hooks.get::<Table>(ON_MESSAGES)?;
-                            let messages: HashMap<String, Vec<String>> =
-                                messages.0.into_iter().collect();
-                            let messages = lua.to_value(&messages)?;
-
-                            for func in msgs_hooks.sequence_values::<mlua::Function>() {
-                                if let Err(err) = func?.call_async::<()>(&messages).await {
-                                    error!(err = ?err, "Failed to call on_messages callback");
-                                }
-                            }
+                            let messages =
+                                client.run(|c| c.read_messages()).await?.0.into_iter().collect();
+                            tx.send_safe(PluginsEvent::Messages { messages });
                         }
                         ev => {
-                            debug!(?ev, "Event currently not supported");
+                            trace!(?ev, "Event currently not supported");
                             // TODO receiving event without calling client::run will block the event
                             // loop forever
                             client.run(|_| Ok(())).await.ok();
                         }
                     }
 
-                    let idle_ev_hooks = hooks.get::<Table>(ON_IDLE)?;
-                    for func in idle_ev_hooks.sequence_values::<mlua::Function>() {
-                        if let Err(err) = func?.call_async::<()>(ev.to_string()).await {
-                            error!(err = ?err, "Failed to call on_idle callback");
-                        }
-                    }
+                    tx.send_safe(PluginsEvent::Idle { event: ev });
                 }
+            }
+            AppEvent::Reconnected => {
+                tx.send_safe(PluginsEvent::Reconnect);
             }
         }
     }
+
+    trace!("Waiting for plugin loop to finish...");
+
+    plugin_handle.await??;
 
     Ok(())
 }

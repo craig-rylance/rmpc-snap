@@ -1,7 +1,8 @@
 ---@meta
 ---@module "rmpcd.playcount"
 
----@class PlaycountModule
----@field install fun()
+---@class PlaycountPlugin: RmpcdPlugin<{ enabled?: boolean }>
+---@field enabled boolean
+
 local M = {}
 return M
