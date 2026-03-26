@@ -22,7 +22,7 @@ parts:
 
 apps:
   rmpc:
-    command: bin/rmpc --config $SNAP_COMMON/config.ron
+    command: rmpc --config $SNAP_COMMON/config.ron
     plugs:
       - audio-playback
       - network
