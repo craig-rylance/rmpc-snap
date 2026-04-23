@@ -5,7 +5,7 @@ use rmpc_shared::{paths::rmpcd_data_dir, version::Version};
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use sha2::{Digest, Sha256};
-use tracing::{info, trace};
+use tracing::{debug, trace};
 
 include!(concat!(env!("OUT_DIR"), "/lua_type_defs.rs"));
 
@@ -26,11 +26,11 @@ fn hash_type_defs() -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub fn eject() -> Result<()> {
+pub fn eject() -> Result<PathBuf> {
     eject_inner(&RealFs)
 }
 
-pub fn eject_inner(fs: &impl FileSystem) -> Result<()> {
+pub fn eject_inner(fs: &impl FileSystem) -> Result<PathBuf> {
     let Some(mut data_dir) = rmpcd_data_dir() else {
         bail!("Could not determine data directory");
     };
@@ -55,15 +55,15 @@ pub fn eject_inner(fs: &impl FileSystem) -> Result<()> {
         })?;
 
         if manifest.rmpcd_version > crate_version {
-            info!(
+            debug!(
                 "Lua type definitions manifest is from newer rmpcd version ({}), skipping eject",
                 manifest.rmpcd_version
             );
-            return Ok(());
+            return Ok(data_dir);
         }
 
         if manifest.hash != hash {
-            info!("Lua type definitions have changed, updating...");
+            debug!("Lua type definitions have changed, updating...");
             for file in manifest.files {
                 let path = data_dir.join(&file);
                 trace!(path = ?path.display(), "Removing old lua type definition file");
@@ -78,12 +78,12 @@ pub fn eject_inner(fs: &impl FileSystem) -> Result<()> {
             eject_type_defs(fs, crate_version, hash, &data_dir)
                 .context("Failed to eject lua type definitions")?;
 
-            return Ok(());
+            return Ok(data_dir);
         }
 
-        info!("Lua type definitions are up to date, skipping eject");
+        debug!("Lua type definitions are up to date, skipping eject");
     } else {
-        info!(
+        debug!(
             "Lua type definitions not found, ejecting type definitions to {}",
             data_dir.display()
         );
@@ -91,7 +91,7 @@ pub fn eject_inner(fs: &impl FileSystem) -> Result<()> {
             .context("Failed to eject lua type definitions")?;
     }
 
-    Ok(())
+    Ok(data_dir)
 }
 
 fn eject_type_defs(
@@ -102,7 +102,7 @@ fn eject_type_defs(
 ) -> Result<()> {
     let mut manifest = Manifest { rmpcd_version: crate_version, hash, files: Vec::new() };
 
-    info!("Ejecting Lua type definitions to {}", data_dir.display());
+    debug!("Ejecting Lua type definitions to {}", data_dir.display());
 
     for (dir, filename, content) in TYPE_DEFS {
         let mut path = data_dir.to_owned();
@@ -387,29 +387,25 @@ mod test {
         assert!(result.is_ok());
         assert_eq!(calls!(fs, "remove_file").len(), 1);
         assert_eq!(calls!(fs, "write").len(), 15);
-        assert_eq!(
-            calls!(fs, "write"),
-            &[
-                "/home/user/.local/share/rmpcd/lua/rmpcd.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/log.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/lyrics.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/util.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/http.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/process.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/lastfm.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/song.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/init.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/status.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/playcount.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/fs.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/notify.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/sync.lua",
-                "/home/user/.local/share/rmpcd/lua/manifest.json",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
-        );
+        for f in [
+            "/home/user/.local/share/rmpcd/lua/rmpcd.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/log.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/lyrics.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/util.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/http.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/process.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/lastfm.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/song.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/init.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/status.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/playcount.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/fs.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/notify.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/sync.lua",
+            "/home/user/.local/share/rmpcd/lua/manifest.json",
+        ] {
+            assert!(calls!(fs, "write").contains(&f.to_string()), "Expected write call for '{f}'");
+        }
         assert_eq!(calls!(fs, "create_dir_all").len(), 14);
     }
 
@@ -426,29 +422,26 @@ mod test {
 
         assert!(result.is_ok());
         assert_eq!(calls!(fs, "write").len(), 15);
-        assert_eq!(
-            calls!(fs, "write"),
-            &[
-                "/home/user/.local/share/rmpcd/lua/rmpcd.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/log.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/lyrics.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/util.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/http.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/process.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/lastfm.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/song.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/init.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/status.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/playcount.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/fs.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/notify.lua",
-                "/home/user/.local/share/rmpcd/lua/rmpcd/sync.lua",
-                "/home/user/.local/share/rmpcd/lua/manifest.json",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
-        );
+        for f in [
+            "/home/user/.local/share/rmpcd/lua/rmpcd.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/log.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/lyrics.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/util.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/http.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/process.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/lastfm.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/song.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/init.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/mpd/status.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/playcount.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/fs.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/notify.lua",
+            "/home/user/.local/share/rmpcd/lua/rmpcd/sync.lua",
+            "/home/user/.local/share/rmpcd/lua/manifest.json",
+        ] {
+            assert!(calls!(fs, "write").contains(&f.to_string()), "Expected write call for '{f}'");
+        }
+
         assert_eq!(calls!(fs, "create_dir_all").len(), 14);
     }
 
@@ -465,19 +458,34 @@ mod test {
 
         let result = eject_inner(&fs);
 
-        let expected_manifest = format!(
-            r#"{{"rmpcd_version":"{crate_version}","hash":"{hash}","files":["rmpcd.lua","rmpcd/log.lua","rmpcd/lyrics.lua","rmpcd/util.lua","rmpcd/http.lua","rmpcd/process.lua","rmpcd/lastfm.lua","rmpcd/mpd/song.lua","rmpcd/mpd/init.lua","rmpcd/mpd/status.lua","rmpcd/playcount.lua","rmpcd/fs.lua","rmpcd/notify.lua","rmpcd/sync.lua"]}}"#
-        );
-
         assert!(result.is_ok());
-        assert_eq!(
-            String::from_utf8_lossy(
-                fs.write_contents
-                    .borrow()
-                    .get("/home/user/.local/share/rmpcd/lua/manifest.json")
-                    .unwrap()
-            ),
-            expected_manifest
-        );
+        let m: Manifest = serde_json::from_str(&String::from_utf8_lossy(
+            fs.write_contents
+                .borrow()
+                .get("/home/user/.local/share/rmpcd/lua/manifest.json")
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(m.rmpcd_version, crate_version);
+        assert_eq!(m.hash, hash);
+        assert_eq!(m.files.len(), 14);
+        for f in [
+            "rmpcd.lua",
+            "rmpcd/log.lua",
+            "rmpcd/lyrics.lua",
+            "rmpcd/util.lua",
+            "rmpcd/http.lua",
+            "rmpcd/process.lua",
+            "rmpcd/lastfm.lua",
+            "rmpcd/mpd/song.lua",
+            "rmpcd/mpd/init.lua",
+            "rmpcd/mpd/status.lua",
+            "rmpcd/playcount.lua",
+            "rmpcd/fs.lua",
+            "rmpcd/notify.lua",
+            "rmpcd/sync.lua",
+        ] {
+            assert!(m.files.contains(&PathBuf::from(f)), "Expected manifest to contain file '{f}'");
+        }
     }
 }

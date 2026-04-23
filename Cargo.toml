@@ -72,6 +72,7 @@ console-subscriber = "0.5"
 reqwest = { version = "0.13.2", features = ["json", "query"] }
 md5 = { version = "0.8.0" }
 ctrlc = { version = "3.5.2" }
+tracing-appender = "0.2"
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -96,6 +97,7 @@ cast_sign_loss = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
+duration_suboptimal_units = "allow"
 
 [workspace.lints.rust]
 unused_macros = "allow"

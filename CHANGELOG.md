@@ -7,8 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `extra_yt_dlp_args` to pass in more things to yt-dlp if required
-- **Breaking** `ExternalCommand` can now have arguments supplied at runtime. This will break your existing
-keybinds if they contained either `{` or `}`. You will now need to escape these by doubling them up: `{{` and `}}`.
+- **Breaking** `ExternalCommand` can now have arguments supplied at runtime. This will break your
+  existing keybinds if they contained either `{` or `}`. You will now need to escape these by
+  doubling them up: `{{` and `}}`.
 - `scroll_speed` to `song_table_format`
 - `album_art.custom_loader` to allow for more flexibility when choosing the album art image
 - added `CopyToClipboard()` action
@@ -21,6 +22,12 @@ keybinds if they contained either `{` or `}`. You will now need to escape these 
 - `Sort` queue keybind
 - `AlbumArtist` added to song properties.
 - Added `queue_disable_current_item_style_timeout_ms`
+- `album_sort_by` now sorts by `Date` first and `Name` second if `Date` is configured
+- Added additional styling properties for symbols: `marker_style`, `marker_current_style`,
+  `song_current_style`, `dir_current_style`, `playlist_current_style`,`marker_highlighted_style`,
+  `song_highlighted_style`, `dir_highlighted_style` and `playlist_highlighted_style`
+- Added alignment config to lyrics
+- Song info modal now respects `duration_format`
 
 ### Changed
 
@@ -39,7 +46,10 @@ keybinds
 - modals ignoring `text_color`
 - Fixed potential panic in sorting when mixixng numerical and non numerical values for some song properties
 - password and address override parameter not working for rmpc's CLI
-
+- Config hot reload ignoring disable flag
+- `debuginfo` command no longer shows incorrect errors about missing components
+- also consider `all` when verifying tmux passthrough
+- add `iTerm.app` into emulator env variable detection
 
 ## [0.11.0] - 2026-02-01
 

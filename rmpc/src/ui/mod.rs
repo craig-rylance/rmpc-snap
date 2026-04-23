@@ -55,7 +55,7 @@ use crate::{
     ui::{
         image::facade::EncodeData,
         input::{InputEvent, InputResultEvent},
-        modals::{downloads::DownloadsModal, menu::create_rating_modal},
+        modals::{downloads::DownloadsModal, info_list_modal::SongCtx, menu::create_rating_modal},
     },
 };
 
@@ -454,12 +454,11 @@ impl<'ui> Ui<'ui> {
                     let state = ctx.status.state;
                     ctx.command(move |client| {
                         match rewind_to_start {
-                            Some(value) => {
-                                if elapsed_sec >= value {
-                                    client.seek_current(ValueChange::Set(0))?;
-                                } else {
-                                    client.prev_keep_state(keep_state, state)?;
-                                }
+                            Some(value) if elapsed_sec >= value => {
+                                client.seek_current(ValueChange::Set(0))?;
+                            }
+                            Some(_value) => {
+                                client.prev_keep_state(keep_state, state)?;
                             }
                             None => {
                                 client.prev_keep_state(keep_state, state)?;
@@ -697,7 +696,7 @@ impl<'ui> Ui<'ui> {
                         modal!(
                             ctx,
                             InfoListModal::builder()
-                                .items(current_song)
+                                .items(SongCtx(current_song, ctx))
                                 .title("Song info")
                                 .column_widths(&[30, 70])
                                 .build()
