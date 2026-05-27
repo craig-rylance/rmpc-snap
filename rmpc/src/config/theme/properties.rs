@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use bon::Builder;
 use itertools::Itertools;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
+use rmpc_mpd::filter::Tag;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use strum::Display;
@@ -562,9 +563,8 @@ impl TryFrom<PropertyFile<PropertyKindFile>> for Property<PropertyKind> {
                             active_style,
                             separator_style,
                         }) => PropertyKind::Widget(WidgetProperty::States {
-                            active_style: active_style.to_config_or(Some(Color::White), None)?,
-                            separator_style: separator_style
-                                .to_config_or(Some(Color::White), None)?,
+                            active_style: active_style.to_config_or(None, None)?,
+                            separator_style: separator_style.to_config_or(None, None)?,
                         }),
                         PropertyKindFile::Widget(WidgetPropertyFile::ScanStatus) => {
                             PropertyKind::Widget(WidgetProperty::ScanStatus)
@@ -650,5 +650,31 @@ impl Default for SongFormatFile {
                 })),
             },
         ])
+    }
+}
+
+impl TryFrom<SongProperty> for Tag {
+    type Error = anyhow::Error;
+
+    fn try_from(value: SongProperty) -> Result<Self, Self::Error> {
+        match value {
+            SongProperty::Filename => bail!("Cannot convert Filename to Tag"),
+            SongProperty::File => bail!("Cannot convert File to Tag"),
+            SongProperty::FileExtension => bail!("Cannot convert FileExtension to Tag"),
+            SongProperty::Title => Ok(Tag::Title),
+            SongProperty::Artist => Ok(Tag::Artist),
+            SongProperty::Album => Ok(Tag::Album),
+            SongProperty::AlbumArtist => Ok(Tag::AlbumArtist),
+            SongProperty::Duration => bail!("Cannot convert Duration to Tag"),
+            SongProperty::Track => Ok(Tag::Custom("track".to_string())),
+            SongProperty::Disc => Ok(Tag::Custom("disc".to_string())),
+            SongProperty::Position => bail!("Cannot convert Position to Tag"),
+            SongProperty::SampleRate() => bail!("Cannot convert SampleRate to Tag"),
+            SongProperty::Bits() => bail!("Cannot convert Bits to Tag"),
+            SongProperty::Channels() => bail!("Cannot convert Channels to Tag"),
+            SongProperty::Added() => bail!("Cannot convert Added to Tag"),
+            SongProperty::LastModified() => bail!("Cannot convert LastModified to Tag"),
+            SongProperty::Other(val) => Ok(Tag::Custom(val)),
+        }
     }
 }

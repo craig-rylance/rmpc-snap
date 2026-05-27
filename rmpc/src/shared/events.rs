@@ -122,7 +122,7 @@ pub(crate) enum WorkDone {
 // The instances are short lived events, boxing would most likely only hurt
 // here.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Debug, strum::EnumDiscriminants)]
 pub(crate) enum AppEvent {
     UserKeyInput(KeyEvent),
     UserMouseInput(MouseEvent),
@@ -169,6 +169,10 @@ pub(crate) enum AppEvent {
         stream: IpcStream,
         targets: Vec<RemoteCommandQuery>,
     },
+    IgnoreIdleEvent(IdleEvent),
+    UnIgnoreIdleEvent(IdleEvent),
+    ReconcileIdleEvent(IdleEvent),
+    FocusGained,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Copy, Eq, Hash, PartialEq)]

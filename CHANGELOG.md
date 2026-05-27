@@ -6,10 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `extra_yt_dlp_args` to pass in more things to yt-dlp if required
+- Added a new vertical volume slider pane.
 - **Breaking** `ExternalCommand` can now have arguments supplied at runtime. This will break your
   existing keybinds if they contained either `{` or `}`. You will now need to escape these by
   doubling them up: `{{` and `}}`.
+- `extra_yt_dlp_args` to pass in more things to yt-dlp if required
 - `scroll_speed` to `song_table_format`
 - `album_art.custom_loader` to allow for more flexibility when choosing the album art image
 - added `CopyToClipboard()` action
@@ -28,11 +29,25 @@ All notable changes to this project will be documented in this file.
   `song_highlighted_style`, `dir_highlighted_style` and `playlist_highlighted_style`
 - Added alignment config to lyrics
 - Song info modal now respects `duration_format`
+- Add `-v`/`--version` args to cli
+- `SelectAlbum` queue keybind
+- More felixbility to `Browser` panes. They can now be configured to any arbitrary levels of nesting
+  instead of hardcoded `["root_tag", "album"]`
 
 ### Changed
 
+- **Breaking** Some color styling options have changed, mainly in relation to `text_color`, you
+  might have to update your theme to get to the old appearance
+- **Breaking** `config.artists` is now ignored in the `Browser` panes. Use the configuration in the
+  `Browser` pane directly to replicate the old behavior.
+- **Breaking** `separator` has been removed from `Browser` pane configuration. This feature should
+  not be needed since MPD and rmpc both support multiple values for a single tag. Tag you files
+  properly and there should be no need for this feature.
 - Improved error message when invalid `default_album_art_path` path is provided
 - Environment variables are now resolved when parsing paths in the config file or theme
+- Sixel is no longer hard limited to 1MB of data. Set `input-buffer-size` in your tmux config to
+  alleviate the limitation.
+- `ContextMenu` moved from `<C-z>` to `<C-x>`  to not conflict with putting the job to background
 
 ### Fixed
 
@@ -50,6 +65,12 @@ keybinds
 - `debuginfo` command no longer shows incorrect errors about missing components
 - also consider `all` when verifying tmux passthrough
 - add `iTerm.app` into emulator env variable detection
+- `PREV_SONG` in `on_song_change` is now correctly tracked with consume on
+- `current_item_style` and `highlighted_item_style` merge on top of `text_color` in modals and search
+- `fg` from `current_item_style` and `highlighted_item_style` in queue rows now correctly applies when using `Reversed`
+- The queue should not leave empty space in the table anymore
+- rmpc will now handle focused events and attempt to resize the TUI if needed
+- Loading a playlist when with missing songs will now load the existing songs instead of nothing
 
 ## [0.11.0] - 2026-02-01
 

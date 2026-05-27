@@ -291,11 +291,7 @@ fn main() -> Result<()> {
             println!("{}", CAVA.display());
         }
         Some(Command::Version) => {
-            println!(
-                "rmpc {}{}",
-                env!("CARGO_PKG_VERSION"),
-                option_env!("VERGEN_GIT_DESCRIBE").map(|g| format!(" git {g}")).unwrap_or_default()
-            );
+            print_version();
         }
         Some(Command::Remote { command, pid }) => {
             let pid = pid.or_else(|| {
@@ -335,9 +331,15 @@ fn main() -> Result<()> {
                 args.partition.autocreate,
             )?;
             client.set_read_timeout(None)?;
-            result(&mut client)?;
+            let (sender, _receiver) = crossbeam::channel::unbounded();
+            result(&sender, &mut client)?;
         }
         None => {
+            if args.version {
+                print_version();
+                return Ok(());
+            }
+
             let (worker_tx, worker_rx) = unbounded::<WorkRequest>();
             let (client_tx, client_rx) = unbounded::<ClientRequest>();
             let (event_tx, event_rx) = unbounded::<AppEvent>();
@@ -453,7 +455,9 @@ fn main() -> Result<()> {
             };
 
             let enable_mouse = ctx.config.enable_mouse;
-            let terminal = Terminal::setup(enable_mouse).context("Failed to setup terminal")?;
+            let enable_focus_events = ctx.config.enable_focus_events;
+            let terminal = Terminal::setup(enable_mouse, enable_focus_events)
+                .context("Failed to setup terminal")?;
             core::input::init(event_tx.clone())?;
 
             let event_loop_handle = core::event_loop::init(ctx, event_rx, terminal)?;
@@ -462,9 +466,17 @@ fn main() -> Result<()> {
 
             event_loop_handle.join().expect("event loop to not panic");
 
-            Terminal::restore(enable_mouse);
+            Terminal::restore(enable_mouse, enable_focus_events);
         }
     }
 
     Ok(())
+}
+
+fn print_version() {
+    println!(
+        "rmpc {}{}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("VERGEN_GIT_DESCRIBE").map(|g| format!(" git {g}")).unwrap_or_default()
+    );
 }

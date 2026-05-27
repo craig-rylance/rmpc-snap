@@ -47,47 +47,44 @@ pub trait DirStackItem {
 }
 
 pub fn marker_style(ctx: &Ctx, is_current: bool, matches_filter: bool) -> Style {
+    let style = ctx.config.theme.symbols.marker_style.unwrap_or_default();
     if is_current {
-        ctx.config.theme.symbols.marker_current_style
+        return style.patch(ctx.config.theme.symbols.marker_current_style.unwrap_or_default());
     } else if matches_filter {
-        ctx.config.theme.symbols.marker_highlighted_style
-    } else {
-        ctx.config.theme.symbols.marker_style
+        return style.patch(ctx.config.theme.symbols.marker_highlighted_style.unwrap_or_default());
     }
-    .unwrap_or(ctx.config.theme.highlighted_item_style)
+    return style;
 }
 
 fn dir_style(ctx: &Ctx, is_current: bool, matches_filter: bool) -> Style {
+    let style = ctx.config.theme.symbols.dir_style.unwrap_or_default();
     if is_current {
-        ctx.config.theme.symbols.dir_current_style
+        return style.patch(ctx.config.theme.symbols.dir_current_style.unwrap_or_default());
     } else if matches_filter {
-        ctx.config.theme.symbols.dir_highlighted_style
-    } else {
-        ctx.config.theme.symbols.dir_style
+        return style.patch(ctx.config.theme.symbols.dir_highlighted_style.unwrap_or_default());
     }
-    .unwrap_or_default()
+    return style;
 }
 
 fn playlist_style(ctx: &Ctx, is_current: bool, matches_filter: bool) -> Style {
+    let style = ctx.config.theme.symbols.playlist_style.unwrap_or_default();
     if is_current {
-        ctx.config.theme.symbols.playlist_current_style
+        return style.patch(ctx.config.theme.symbols.playlist_current_style.unwrap_or_default());
     } else if matches_filter {
-        ctx.config.theme.symbols.playlist_highlighted_style
-    } else {
-        ctx.config.theme.symbols.playlist_style
+        return style
+            .patch(ctx.config.theme.symbols.playlist_highlighted_style.unwrap_or_default());
     }
-    .unwrap_or_default()
+    return style;
 }
 
 fn song_style(ctx: &Ctx, is_current: bool, matches_filter: bool) -> Style {
+    let style = ctx.config.theme.symbols.song_style.unwrap_or_default();
     if is_current {
-        ctx.config.theme.symbols.song_current_style
+        return style.patch(ctx.config.theme.symbols.song_current_style.unwrap_or_default());
     } else if matches_filter {
-        ctx.config.theme.symbols.song_highlighted_style
-    } else {
-        ctx.config.theme.symbols.song_style
+        return style.patch(ctx.config.theme.symbols.song_highlighted_style.unwrap_or_default());
     }
-    .unwrap_or_default()
+    return style;
 }
 
 impl DirStackItem for DirOrSong {
@@ -114,9 +111,12 @@ impl DirStackItem for DirOrSong {
 
     fn matches(&self, song_format: &[Property<SongProperty>], ctx: &Ctx, filter: &str) -> bool {
         match self {
-            DirOrSong::Dir { name, .. } => if name.is_empty() { "Untitled" } else { name.as_str() }
-                .to_lowercase()
-                .contains(&filter.to_lowercase()),
+            DirOrSong::Dir { name, display_name, .. } => {
+                let name = display_name.as_ref().unwrap_or(name);
+                if name.is_empty() { "Untitled" } else { name.as_str() }
+                    .to_lowercase()
+                    .contains(&filter.to_lowercase())
+            }
             DirOrSong::Song(s) => s.matches_formats(song_format, filter, ctx),
         }
     }
@@ -130,7 +130,7 @@ impl DirStackItem for DirOrSong {
         additional_content: Option<String>,
     ) -> ListItem<'a> {
         match self {
-            DirOrSong::Dir { name, playlist: is_playlist, .. } => {
+            DirOrSong::Dir { name, display_name, playlist: is_playlist, .. } => {
                 let config = &ctx.config;
                 let marker_style = marker_style(ctx, is_current, matches_filter);
                 let dir_style = dir_style(ctx, is_current, matches_filter);
@@ -141,6 +141,7 @@ impl DirStackItem for DirOrSong {
                 } else {
                     Span::from(" ".repeat(config.theme.symbols.marker.chars().count()))
                 };
+                let name = display_name.as_ref().unwrap_or(name);
                 let mut value = Line::from(vec![
                     marker_span,
                     if *is_playlist {
@@ -176,7 +177,9 @@ impl DirStackItem for DirOrSong {
 
     fn format(&self, format: &[Property<SongProperty>], sep: &str, ctx: &Ctx) -> String {
         match self {
-            DirOrSong::Dir { name, .. } => name.clone(),
+            DirOrSong::Dir { name, display_name, .. } => {
+                display_name.as_ref().unwrap_or(name).clone()
+            }
             DirOrSong::Song(s) => <Song as DirStackItem>::format(s, format, sep, ctx),
         }
     }
