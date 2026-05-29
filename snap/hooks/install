@@ -7,9 +7,5 @@ mkdir -p "$SNAP_COMMON/log" # This is optional as you can use systemd logging fo
 if [ ! -f "$SNAP_COMMON/config.ron" ]; then
   cp "$SNAP/etc/rmpc/config.ron" "$SNAP_COMMON/config.ron"
 fi
-# if [ ! -d "$SNAP_COMMON/mpd" ]; then
-#     mkdir "$SNAP_COMMON/mpd"
-#     chmod 775 "$SNAP_COMMON/mpd"
-#     chown snap_daemon "$SNAP_COMMON/mpd"
-# fi
 
+chmod +w "$SNAP_COMMON/config.ron"

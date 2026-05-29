@@ -19,10 +19,15 @@ parts:
     source-type: local
     organize:
       '*': etc/rmpc/
+  local-files:
+    plugin: dump
+    source: snap/local/
+    organize:
+      '*.sh': usr/bin/
 
 apps:
   rmpc:
-    command: rmpc --config $SNAP_COMMON/config.ron
+    command: usr/bin/rmpc-wrapper.sh --config $SNAP_COMMON/config.ron
     plugs:
       - audio-playback
       - network
