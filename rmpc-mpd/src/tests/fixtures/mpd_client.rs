@@ -17,7 +17,7 @@ use crate::{
         Status,
         Update,
         Volume,
-        list::MpdList,
+        list::{MpdGroupedList, MpdList},
         list_all::ListAll,
         list_playlist::FileList,
         metadata_tag::MetadataTagExt,
@@ -28,7 +28,13 @@ use crate::{
     },
     errors::MpdError,
     filter::{Filter, Tag},
-    mpd_client::{MpdClient, SaveMode, StickerFilter, StringNormalizationFeature, ValueChange},
+    mpd_client::{
+        MpdClient,
+        SaveMode,
+        StickerFindOptions,
+        StringNormalizationFeature,
+        ValueChange,
+    },
     proto_client::SocketClient,
     queue_position::QueuePosition,
     single_or_range::SingleOrRange,
@@ -460,6 +466,15 @@ impl MpdClient for TestMpdClient {
         todo!("Not yet implemented")
     }
 
+    fn list_tag_grouped(
+        &mut self,
+        _tag: Tag,
+        _group_tags: &[Tag],
+        _filter: Option<&[Filter<'_>]>,
+    ) -> MpdResult<MpdGroupedList> {
+        todo!("Not yet implemented")
+    }
+
     fn shuffle(&mut self, _range: Option<SingleOrRange>) -> MpdResult<()> {
         todo!("Not yet implemented")
     }
@@ -630,7 +645,7 @@ impl MpdClient for TestMpdClient {
         &mut self,
         _uri: &str,
         _name: &str,
-        _filter: Option<StickerFilter>,
+        _opts: StickerFindOptions,
     ) -> MpdResult<crate::commands::stickers::StickersWithFile> {
         todo!("Not yet implemented")
     }

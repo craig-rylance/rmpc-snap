@@ -149,6 +149,17 @@ impl TryFrom<BrowserTagConfigFile> for BrowserTagConfig {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
+pub enum StickerPaneSort {
+    #[default]
+    Uri,
+    UriDesc,
+    Value,
+    ValueDesc,
+    ValueInt,
+    ValueIntDesc,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum PaneTypeFile {
@@ -161,6 +172,15 @@ pub enum PaneTypeFile {
     Albums,
     AlbumArtists,
     Playlists,
+    Sticker {
+        sticker: String,
+        #[serde(default)]
+        format: Option<Vec<PropertyFile<SongPropertyFile>>>,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        sort: StickerPaneSort,
+    },
     Search,
     AlbumArt,
     Lyrics,
@@ -203,6 +223,12 @@ pub enum PaneType {
     AlbumArtists,
     Albums,
     Playlists,
+    Sticker {
+        sticker: String,
+        format: Vec<Property<SongProperty>>,
+        limit: Option<u32>,
+        sort: StickerPaneSort,
+    },
     Search,
     AlbumArt,
     Lyrics,
@@ -231,7 +257,7 @@ pub const PANES_ALLOWED_IN_BOTH_TAB_AND_LAYOUT: [PaneTypeDiscriminants; 2] =
     [PaneTypeDiscriminants::Property, PaneTypeDiscriminants::Empty];
 
 #[cfg(debug_assertions)]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
+pub const UNFOCUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -247,7 +273,7 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
 ];
 
 #[cfg(not(debug_assertions))]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
+pub const UNFOCUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -263,7 +289,7 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
 
 impl Pane {
     pub fn is_focusable(&self) -> bool {
-        !UNFOSUSABLE_TABS.contains(&PaneTypeDiscriminants::from(&self.pane))
+        !UNFOCUSABLE_TABS.contains(&PaneTypeDiscriminants::from(&self.pane))
     }
 }
 
@@ -281,6 +307,16 @@ impl TryFrom<PaneTypeFile> for PaneType {
             PaneTypeFile::AlbumArtists => PaneType::AlbumArtists,
             PaneTypeFile::Albums => PaneType::Albums,
             PaneTypeFile::Playlists => PaneType::Playlists,
+            PaneTypeFile::Sticker { sticker, format, limit, sort } => PaneType::Sticker {
+                sticker,
+                format: format
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.convert())
+                    .try_collect()?,
+                limit,
+                sort,
+            },
             PaneTypeFile::Search => PaneType::Search,
             PaneTypeFile::AlbumArt => PaneType::AlbumArt,
             PaneTypeFile::Lyrics => PaneType::Lyrics,
@@ -324,7 +360,15 @@ impl TryFrom<PaneTypeFile> for PaneType {
                                     SongProperty::Other("date".to_string()),
                                 ]],
                                 sort_by: None,
-                                format: vec![],
+                                format: vec![Property {
+                                    kind: PropertyKindOrText::Property(SongProperty::Album),
+                                    style: None,
+                                    default: Some(Box::new(Property {
+                                        kind: PropertyKindOrText::Text("<no album>".to_string()),
+                                        style: None,
+                                        default: None,
+                                    })),
+                                }],
                                 skip: CollapseLevel::default(),
                             },
                         ],
@@ -334,16 +378,8 @@ impl TryFrom<PaneTypeFile> for PaneType {
                         bail!("At least one level is required for browser panes");
                     }
 
-                    if levels[0].group_by.len() != 1 {
-                        bail!("group_by on the first level must have exactly one tag");
-                    }
-
-                    if levels[0].sort_by.is_some() {
-                        bail!("sort_by is not allowed on the first level");
-                    }
-
-                    if levels[0].format.is_some() {
-                        bail!("format is not allowed on the first level");
+                    if levels[0].group_by.is_empty() {
+                        bail!("group_by on the first level must have at least one entry");
                     }
 
                     PaneType::Browser {
@@ -1296,7 +1332,7 @@ pub(crate) fn validate_tabs(layout: &SizedPaneOrSplit, tabs: &Tabs) -> Result<()
     ensure!(
         !layout_panes.iter().all(|pane| pane.is_focusable()),
         "Only non-focusable panes are supported in the layout. Possible values: {}",
-        UNFOSUSABLE_TABS.iter().join(", ")
+        UNFOCUSABLE_TABS.iter().join(", ")
     );
     ensure!(
         layout_panes.iter().filter(|pane| pane.pane == PaneType::TabContent).count() == 1,

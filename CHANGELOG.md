@@ -33,6 +33,10 @@ All notable changes to this project will be documented in this file.
 - `SelectAlbum` queue keybind
 - More felixbility to `Browser` panes. They can now be configured to any arbitrary levels of nesting
   instead of hardcoded `["root_tag", "album"]`
+- Added `Sticker` browser pane showing songs that have the selected sticker. The sticker
+  needs to be tracked externally by for example [rmpcd plugin](https://github.com/rmpc-org/rmpcd-lastplayed).
+- Added `zt`, `zz` and `zb` Vim-style navigation keybinds to scroll the focused entry to the top,
+  middle or bottom of the viewport
 
 ### Changed
 
@@ -51,6 +55,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Kitty image backend never displaying images whose encoded data fits into a single 4096 byte
+  chunk, because the first chunk always claimed more data would follow (`m=1`)
+- Benign error log when reading a sticker that does not exist
 - Theme hot reload not working when it was set using the `theme.ron` form
 - Issue with Iterm2 image protocol not rendering images sometimes
 - Moved `Update` and `Rescan` back to `u` and `U` respectively because they were conflicting with other
@@ -71,6 +78,8 @@ keybinds
 - The queue should not leave empty space in the table anymore
 - rmpc will now handle focused events and attempt to resize the TUI if needed
 - Loading a playlist when with missing songs will now load the existing songs instead of nothing
+- The borders of browser panes are nolonger affected by the scrollbar track being set
+- Adding a directory to the queue now orders its songs by `directories_sort` instead of relying on MPD's default order
 
 ## [0.11.0] - 2026-02-01
 

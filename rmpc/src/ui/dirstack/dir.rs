@@ -157,6 +157,7 @@ where
                     None
                 };
                 item.to_list_item(
+                    song_format,
                     ctx,
                     self.marked().contains(&i),
                     current_item_idx.is_some_and(|idx| idx == i),
@@ -285,6 +286,18 @@ where
 
     pub fn scroll_up(&mut self, amount: usize, scrolloff: usize) {
         self.state.scroll_up(amount, scrolloff);
+    }
+
+    pub fn scroll_focused_to_top(&mut self, scrolloff: usize) {
+        self.state.scroll_focused_to_top(scrolloff);
+    }
+
+    pub fn scroll_focused_to_middle(&mut self, scrolloff: usize) {
+        self.state.scroll_focused_to_middle(scrolloff);
+    }
+
+    pub fn scroll_focused_to_bottom(&mut self, scrolloff: usize) {
+        self.state.scroll_focused_to_bottom(scrolloff);
     }
 
     pub fn last(&mut self) {

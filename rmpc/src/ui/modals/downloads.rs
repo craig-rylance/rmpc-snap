@@ -137,6 +137,18 @@ impl Modal for DownloadsModal {
                     self.queue.last();
                     ctx.render()?;
                 }
+                CommonAction::ScrollFocusedToTop => {
+                    self.queue.scroll_focused_to_top(ctx.config.scrolloff);
+                    ctx.render()?;
+                }
+                CommonAction::ScrollFocusedToMiddle => {
+                    self.queue.scroll_focused_to_middle(ctx.config.scrolloff);
+                    ctx.render()?;
+                }
+                CommonAction::ScrollFocusedToBottom => {
+                    self.queue.scroll_focused_to_bottom(ctx.config.scrolloff);
+                    ctx.render()?;
+                }
                 CommonAction::Select => {}
                 CommonAction::ShowInfo => {}
 
@@ -274,7 +286,7 @@ impl DownloadsModal {
                                     let modal = InfoModal::builder()
                                         .ctx(ctx)
                                         .title("Logs")
-                                        .percent_width(80.0)
+                                        .percent_width(80.0f32)
                                         .message(logs)
                                         .replacement_id("download_logs")
                                         .build();
@@ -347,6 +359,7 @@ impl DirStackItem for DownloadId {
 
     fn to_list_item<'a>(
         &self,
+        _song_format: &[Property<SongProperty>],
         _ctx: &Ctx,
         _is_marked: bool,
         _is_current: bool,

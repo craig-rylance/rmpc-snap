@@ -2,13 +2,26 @@
 use std::{collections::HashMap, sync::Arc};
 
 use rmpc_mpd::{
-    commands::{State, status::OnOffOneshot, volume::Bound},
-    mpd_client::{MpdClient, ValueChange},
+    commands::{Song, State, status::OnOffOneshot, volume::Bound},
+    mpd_client::{MpdClient, MpdCommand, ValueChange},
+    proto_client::ProtoClient,
 };
 use tokio::sync::RwLock;
-use zbus::{fdo, interface, zvariant::Value};
+use zbus::{
+    fdo,
+    interface,
+    object_server::SignalEmitter,
+    zvariant::{ObjectPath, Value},
+};
 
-use crate::{async_client::AsyncClient, ctx::Ctx};
+use crate::{
+    async_client::AsyncClient,
+    ctx::Ctx,
+    mpris::{
+        metadata::SongExt,
+        seek::{self, SeekPlan},
+    },
+};
 
 pub struct Player {
     ctx: Arc<RwLock<Ctx>>,
@@ -71,15 +84,66 @@ impl Player {
         Ok(())
     }
 
-    async fn seek(&self, position: i64) -> fdo::Result<()> {
-        let position =
-            position.clamp(0, self.ctx.read().await.status.duration.as_micros() as i64) / 1_000_000;
-        self.client
-            .run(move |c| c.seek_current(ValueChange::Set(position as u32)))
-            .await
-            .map_err(|e| fdo::Error::Failed(format!("Failed to seek: {e}")))?;
+    async fn seek(
+        &self,
+        offset: i64,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let (elapsed_us, duration_us) = {
+            let ctx = self.ctx.read().await;
+            (ctx.status.elapsed.as_micros() as i64, ctx.status.duration.as_micros() as i64)
+        };
+
+        match seek::plan_relative_seek(elapsed_us, duration_us, offset) {
+            SeekPlan::Relative { delta_secs, seeked_us } => {
+                let change = if delta_secs < 0 {
+                    ValueChange::Decrease(delta_secs.unsigned_abs() as u32)
+                } else {
+                    ValueChange::Increase(delta_secs as u32)
+                };
+                self.client
+                    .run(move |c| c.seek_current(change))
+                    .await
+                    .map_err(|e| fdo::Error::Failed(format!("Failed to seek: {e}")))?;
+                Player::seeked(&emitter, seeked_us).await?;
+            }
+            SeekPlan::Next => {
+                self.client.run(|c| c.next()).await.map_err(|e| {
+                    fdo::Error::Failed(format!("Failed to seek past track end: {e}"))
+                })?;
+            }
+            SeekPlan::Absolute { .. } | SeekPlan::Ignore => {}
+        }
         Ok(())
     }
+
+    async fn set_position(
+        &self,
+        track_id: ObjectPath<'_>,
+        position: i64,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let requested_id = Song::id_from_object_path(track_id);
+        let (current_id, duration_us) = {
+            let ctx = self.ctx.read().await;
+            (ctx.current_song.as_ref().map(|song| song.id), ctx.status.duration.as_micros() as i64)
+        };
+
+        match seek::plan_set_position(current_id, requested_id, position, duration_us) {
+            SeekPlan::Absolute { secs, seeked_us } => {
+                self.client
+                    .run(move |c| c.seek_current(ValueChange::Set(secs)))
+                    .await
+                    .map_err(|e| fdo::Error::Failed(format!("Failed to set position: {e}")))?;
+                Player::seeked(&emitter, seeked_us).await?;
+            }
+            SeekPlan::Relative { .. } | SeekPlan::Next | SeekPlan::Ignore => {}
+        }
+        Ok(())
+    }
+
+    #[zbus(signal)]
+    pub async fn seeked(emitter: &SignalEmitter<'_>, position: i64) -> zbus::Result<()> {}
 
     #[zbus(property)]
     async fn volume(&self) -> f64 {
@@ -123,8 +187,55 @@ impl Player {
         match single {
             OnOffOneshot::On => "Track",
             OnOffOneshot::Off => "Playlist",
-            OnOffOneshot::Oneshot => "None",
+            OnOffOneshot::Oneshot => "Playlist",
         }
+    }
+
+    #[zbus(property)]
+    async fn set_loop_status(&self, value: &str) -> zbus::Result<()> {
+        let (repeat, single) = match value {
+            "None" => (false, OnOffOneshot::Off),
+            "Track" => (true, OnOffOneshot::On),
+            "Playlist" => (true, OnOffOneshot::Off),
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!("Invalid loop status: {other}")).into());
+            }
+        };
+
+        self.client
+            .run(move |c| {
+                c.send_start_cmd_list()?;
+                c.send_repeat(repeat)?;
+                c.send_single(single)?;
+                c.send_execute_cmd_list()?;
+                c.read_ok()?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| fdo::Error::Failed(format!("Failed to set loop status: {e}")))?;
+
+        let mut state = self.ctx.write().await;
+        state.status.repeat = repeat;
+        state.status.single = single;
+
+        Ok(())
+    }
+
+    #[zbus(property)]
+    async fn shuffle(&self) -> bool {
+        self.ctx.read().await.status.random
+    }
+
+    #[zbus(property)]
+    async fn set_shuffle(&self, value: bool) -> zbus::Result<()> {
+        self.client
+            .run(move |c| c.random(value))
+            .await
+            .map_err(|e| fdo::Error::Failed(format!("Failed to set shuffle: {e}")))?;
+
+        self.ctx.write().await.status.random = value;
+
+        Ok(())
     }
 
     #[zbus(property)]
